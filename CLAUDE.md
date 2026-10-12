@@ -8,7 +8,8 @@ Windows 11 拼音输入法。目标:界面与功能像微信输入法一样简�
 - 引擎:Rust(独立 crate,Linux 上可单测,不依赖 Windows)。
 - Windows 前端:复用 PIME(TSF 宿主),Rust 引擎作为后端进程,经 PIME 的 JSON 协议通信。
 - 词库:开源词库 + 词频起步;第二阶段训练 bigram 重排。完全离线。
-- 构建/发布:GitHub Actions 的 Windows runner 出 exe,发 release。
+- 构建/发布:GitHub Actions 因账单锁定不可用(`release.yml` 保留待解锁);现走本机交叉编译(mingw-w64,目标 `x86_64-pc-windows-gnu`)+ `makensis` 出安装包,`gh release create` 手动发布。
+- 安装形态:附加安装包 `PYIME-<版本>-setup.exe`,装进已安装的官方 PIME 2.0.0-beta(往其 `backends.json` 登记后端并重新 `regsvr32`)。
 
 ## Project Layout
 (待建立,随代码补充)
@@ -18,7 +19,11 @@ Windows 11 拼音输入法。目标:界面与功能像微信输入法一样简�
 # build: cargo build
 # test:  cargo test
 # lint:  cargo clippy
-# run:   (待定)
+# 交叉编译 + 打包(本机):
+#   cargo build --release --target x86_64-pc-windows-gnu -p pyime-backend
+#   cp target/x86_64-pc-windows-gnu/release/pyime-backend.exe installer/server.exe
+#   makensis -DVERSION=<版本> installer/pyime.nsi
+# 依赖验收:x86_64-w64-mingw32-objdump -p <exe> | grep 'DLL Name'(不得含 libgcc/libwinpthread)
 ```
 
 ## Conventions

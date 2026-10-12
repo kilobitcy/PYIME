@@ -1,1 +1,3 @@
 target/
+installer/server.exe
+installer/*-setup.exe

@@ -1,0 +1,4 @@
+# Linux→Windows 交叉编译:windows-gnu 目标用 mingw-w64 链接器,仅该目标生效。
+[target.x86_64-pc-windows-gnu]
+linker = "x86_64-w64-mingw32-gcc"
+ar = "x86_64-w64-mingw32-ar"
