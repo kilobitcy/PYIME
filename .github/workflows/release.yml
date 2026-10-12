@@ -1,0 +1,54 @@
+name: release
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 校验 tag 与 Cargo.toml 版本一致
+        if: startsWith(github.ref, 'refs/tags/v')
+        shell: bash
+        run: |
+          ver=$(grep -m1 '^version' crates/pyime-backend/Cargo.toml | sed 's/.*"\(.*\)"/\1/')
+          [ "v$ver" = "${GITHUB_REF_NAME}" ] || { echo "tag ${GITHUB_REF_NAME} 与 Cargo 版本 v$ver 不一致"; exit 1; }
+
+      - name: 测试
+        run: cargo test --workspace
+
+      - name: 构建后端
+        run: cargo build --release -p pyime-backend
+
+      - name: 安装 NSIS
+        run: choco install nsis -y --no-progress
+
+      - name: 打包安装器
+        shell: bash
+        run: |
+          ver=$(grep -m1 '^version' crates/pyime-backend/Cargo.toml | sed 's/.*"\(.*\)"/\1/')
+          cp target/release/pyime-backend.exe installer/server.exe
+          "/c/Program Files (x86)/NSIS/makensis.exe" -DVERSION=$ver installer/pyime.nsi
+          ls installer/*.exe
+
+      - name: 上传构建产物
+        uses: actions/upload-artifact@v4
+        with:
+          name: PYIME-setup
+          path: installer/PYIME-*-setup.exe
+
+      - name: 发布 release
+        if: startsWith(github.ref, 'refs/tags/v')
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "${GITHUB_REF_NAME}" installer/PYIME-*-setup.exe \
+            --title "PYIME ${GITHUB_REF_NAME}" --generate-notes
