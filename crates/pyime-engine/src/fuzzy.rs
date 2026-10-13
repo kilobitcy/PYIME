@@ -1,6 +1,6 @@
 //! 模糊音:把"用户键入的音节"展开成"词典里可能的音节",每个变体带模糊次数。
 //! 规则两两成对且不传递(n=l、r=l 并存,但 n 与 r 不互通)。
-use crate::pinyin::is_syllable;
+use crate::pinyin::{all, is_syllable};
 
 /// 声母对(用户键入 ↔ 词典)。
 const INITIALS: [(&str, &str); 5] = [("z", "zh"), ("c", "ch"), ("s", "sh"), ("n", "l"), ("r", "l")];
@@ -73,6 +73,24 @@ pub fn variants(s: &str, cfg: &FuzzyConfig) -> Vec<(String, u8)> {
     out
 }
 
+/// 末尾没打完的字母 `rest` 可能对应的音节:`(音节, 模糊次数)`。
+/// 只以"音节开头"匹配;声母套用模糊音,单独的 z/c/s 不吞掉 zh/ch/sh 开头的音节。
+pub fn partial(rest: &str, cfg: &FuzzyConfig) -> Vec<(&'static str, u8)> {
+    let (ini, tail) = split(rest);
+    let mut starts: Vec<(String, &str, u8)> = vec![(rest.to_string(), ini, 0)];
+    for a in others(&INITIALS, &cfg.initials, ini) {
+        starts.push((format!("{a}{tail}"), a, 1));
+    }
+    let mut out = Vec::new();
+    for t in all() {
+        let t_ini = split(t).0;
+        if let Some(&(_, _, c)) = starts.iter().find(|(pre, i, _)| t.starts_with(pre.as_str()) && t_ini == *i) {
+            out.push((t, c));
+        }
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -113,5 +131,15 @@ mod tests {
         let mut cfg = FuzzyConfig::none();
         cfg.initials[0] = true;
         assert_eq!(keys("zan", &cfg), ["zan", "zhan"]);
+    }
+
+    #[test]
+    fn 末尾残缺音节按开头匹配并套用声母模糊() {
+        let got = partial("p", &FuzzyConfig::default());
+        assert!(got.contains(&("pie", 0)) && got.contains(&("pian", 0)) && !got.iter().any(|(t, _)| t.starts_with('b')));
+        let got = partial("s", &FuzzyConfig::default());
+        assert!(got.contains(&("si", 0)) && got.contains(&("shi", 1)));
+        let got = partial("sh", &FuzzyConfig::none());
+        assert!(got.contains(&("shi", 0)) && !got.iter().any(|(t, _)| *t == "si"));
     }
 }

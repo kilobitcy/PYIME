@@ -33,6 +33,11 @@ fn table() -> &'static HashSet<&'static str> {
     T.get_or_init(|| SYLLABLES.split_whitespace().collect())
 }
 
+/// 全部合法音节。
+pub fn all() -> impl Iterator<Item = &'static str> {
+    table().iter().copied()
+}
+
 pub fn is_syllable(s: &str) -> bool {
     table().contains(s)
 }

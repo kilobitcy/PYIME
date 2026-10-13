@@ -1,12 +1,14 @@
 //! 候选生成:切分格 + 模糊展开 + 词典查询 + 整句 Viterbi,精确匹配优先、模糊匹配降权。
 use crate::dict::Dict;
-use crate::fuzzy::{variants, FuzzyConfig};
+use crate::fuzzy::{partial, variants, FuzzyConfig};
 use crate::pinyin::syllables_at;
 use crate::user::UserModel;
 
 /// 每次模糊替换的惩罚(自然对数域,约等于词频缩小 e^4 ≈ 55 倍)。
 pub const FUZZY_PENALTY: f64 = 4.0;
 /// 整句里每多一个词的代价,使"长词"优于"拆成单字"。
+/// 末尾残缺音节(只打了开头)的惩罚,使同长度时完整音节的词优先。
+const PARTIAL_PENALTY: f64 = 3.0;
 const WORD_COST: f64 = 18.0;
 /// 同一拼音键最多取前几个词条。
 const PER_KEY: usize = 8;
@@ -57,8 +59,25 @@ impl Engine {
         self.user.learn(typed, text);
     }
 
+    /// 末尾没打完的字母按音节开头匹配,词在输入末尾结束。
+    fn grow_partial(&self, input: &str, start: usize, pos: usize, key: &str, fuzzy: u8, out: &mut Vec<Word>) {
+        if pos >= input.len() {
+            return;
+        }
+        for (syl, c) in partial(&input[pos..], &self.cfg) {
+            let next = if key.is_empty() { syl.to_string() } else { format!("{key} {syl}") };
+            let f = fuzzy + c;
+            for e in self.dict.get(&next).into_iter().take(PER_KEY) {
+                let bonus = self.user.bonus(&input[start..], &e.word);
+                let score = f64::from(e.weight.max(1)).ln() - FUZZY_PENALTY * f64::from(f) - PARTIAL_PENALTY + bonus;
+                out.push(Word { start, end: input.len(), text: e.word, score, fuzzy: f });
+            }
+        }
+    }
+
     /// 收集从 `pos` 出发的所有词(沿切分格深搜,词典前缀不存在即剪枝)。
     fn grow(&self, input: &str, start: usize, pos: usize, key: &str, fuzzy: u8, depth: usize, out: &mut Vec<Word>) {
+        self.grow_partial(input, start, pos, key, fuzzy, out);
         for syl in syllables_at(input, pos) {
             let end = pos + syl.len();
             for (v, c) in variants(syl, &self.cfg) {
@@ -221,5 +240,23 @@ mod tests {
     #[test]
     fn 无匹配返回空() {
         assert!(engine(&[("ni", "你", 1)]).candidates("vv").is_empty());
+    }
+
+    #[test]
+    fn 末尾残缺音节命中长词且覆盖全部输入优先() {
+        let e = engine(&[
+            ("jing hong yi pie", "惊鸿一瞥", 4000),
+            ("jin hong yi", "金宏义", 90_000),
+            ("jin hong", "金红", 90_000),
+        ]);
+        let c = e.candidates("jinhongyip");
+        assert_eq!((c[0].text.as_str(), c[0].consumed), ("惊鸿一瞥", 10));
+        assert!(c.iter().any(|c| c.text == "金宏义" && c.consumed == 9));
+    }
+
+    #[test]
+    fn 完整音节优先于同位置的残缺音节() {
+        let e = engine(&[("ni", "你", 1000), ("nian", "年", 1500)]);
+        assert_eq!(texts(&e, "ni")[0], "你");
     }
 }
