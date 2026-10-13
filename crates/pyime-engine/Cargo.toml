@@ -1,0 +1,8 @@
+[package]
+name = "pyime-engine"
+version = "0.1.2"
+edition = "2021"
+license = "GPL-3.0-only"
+
+[dependencies]
+fst = "0.4"
