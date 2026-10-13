@@ -7,6 +7,8 @@ const VK_ESCAPE: i64 = 27;
 const VK_SPACE: i64 = 32;
 const VK_UP: i64 = 38;
 const VK_DOWN: i64 = 40;
+/// 候选横排,每行个数(微信输入法每页 5 个)。
+const CANDS_PER_ROW: i64 = 5;
 const CANDIDATES: [&str; 3] = ["测试", "候选", "拼音"];
 
 /// 数字键 1-9(主键盘或小键盘)对应的候选下标。
@@ -89,7 +91,7 @@ impl Session {
         if !self.composition.is_empty() {
             resp["candidateList"] = json!(CANDIDATES);
             resp["candidateCursor"] = json!(self.cursor);
-            resp["customizeUI"] = json!({ "candUseCursor": true });
+            resp["customizeUI"] = json!({ "candUseCursor": true, "candPerRow": CANDS_PER_ROW });
         }
     }
 }
@@ -181,6 +183,13 @@ mod tests {
         assert_eq!(key(&mut s, "onKeyDown", VK_UP)["candidateCursor"], 0);
         key(&mut s, "onKeyDown", VK_DOWN);
         assert_eq!(key(&mut s, "onKeyDown", 73)["candidateCursor"], 0);
+    }
+
+    #[test]
+    fn 候选横排每行五个() {
+        let mut s = Session::default();
+        let r = key(&mut s, "onKeyDown", 78);
+        assert_eq!(r["customizeUI"]["candPerRow"], 5);
     }
 
     #[test]

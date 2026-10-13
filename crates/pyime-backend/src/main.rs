@@ -48,6 +48,9 @@ fn main() {
                 break;
             }
         };
+        if line.trim().is_empty() {
+            continue; // PIME 会在请求之间多发空行,直接跳过,不写日志
+        }
         log::line(&format!("> {line}"));
         let Some((id, req)) = protocol::parse_request(&line) else {
             log::line("忽略:请求格式不合法");
