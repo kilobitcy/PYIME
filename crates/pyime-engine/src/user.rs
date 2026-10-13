@@ -36,6 +36,17 @@ impl UserModel {
         b
     }
 
+    /// 学过的、键入拼音是 `input` 开头的 (拼音, 词, 加分);用于补充词典外的整句。
+    pub fn matching<'a>(&'a self, input: &str) -> Vec<(&'a str, &'a str, f64)> {
+        let mut out = Vec::new();
+        for ((t, w), _) in &self.pairs {
+            if input.starts_with(t.as_str()) {
+                out.push((t.as_str(), w.as_str(), self.bonus(t, w)));
+            }
+        }
+        out
+    }
+
     /// 序列化为 `拼音⇥词⇥次数` 行,便于存盘。
     pub fn export(&self) -> String {
         let mut lines: Vec<String> = self.pairs.iter().map(|((t, w), n)| format!("{t}\t{w}\t{n}")).collect();

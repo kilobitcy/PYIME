@@ -36,6 +36,9 @@ pub struct Session {
     /// 尚未转换的拼音字母。
     input: String,
     cands: Vec<Candidate>,
+    /// 本次组词累计键入并已选定的拼音,用于分段选完后学习整句。
+    typed_all: String,
+    segments: usize,
     page: usize,
     /// 页内高亮下标。
     cursor: usize,
@@ -47,7 +50,7 @@ pub struct Session {
 
 impl Session {
     pub fn new(ime: Rc<Ime>) -> Session {
-        Session { ime, pending: String::new(), input: String::new(), cands: Vec::new(), page: 0, cursor: 0, english: false, shift_pending: false }
+        Session { ime, pending: String::new(), input: String::new(), cands: Vec::new(), typed_all: String::new(), segments: 0, page: 0, cursor: 0, english: false, shift_pending: false }
     }
 
     fn composing(&self) -> bool {
@@ -136,9 +139,17 @@ impl Session {
         let typed: String = self.input.drain(..c.consumed).collect();
         self.ime.learn(&typed, &c.text);
         self.pending.push_str(&c.text);
+        self.typed_all.push_str(&typed);
+        self.segments += 1;
         if self.input.is_empty() {
             self.cands.clear();
-            return Some(std::mem::take(&mut self.pending));
+            let text = std::mem::take(&mut self.pending);
+            if self.segments > 1 {
+                self.ime.learn(&self.typed_all, &text); // 分段选完的整句也学
+            }
+            self.typed_all.clear();
+            self.segments = 0;
+            return Some(text);
         }
         self.refresh();
         None
@@ -171,6 +182,8 @@ impl Session {
         let text = format!("{}{}", self.pending, self.input);
         self.pending.clear();
         self.input.clear();
+        self.typed_all.clear();
+        self.segments = 0;
         text
     }
 

@@ -12,6 +12,7 @@ const CASES: &[(&str, &str, usize)] = &[
     ("woaini", "我爱你", 1),
     ("jintiantianqihenhao", "今天天气很好", 1),
     ("fujian", "福建", 3),
+    ("zaizhuijia", "再追加", 2), // 用户期望第 1:需 bigram 或学习一次
 ];
 
 #[test]

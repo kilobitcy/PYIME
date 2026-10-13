@@ -188,3 +188,12 @@ fn 未组词时shift加字母放行大写() {
     let r = s.handle(&json!({"method": "filterKeyDown", "seqNum": 1, "keyCode": N, "keyStates": states}));
     assert_eq!(r["return"], false);
 }
+
+#[test]
+fn 分段选完后整句被学习() {
+    let mut s = session();
+    press(&mut s, &[N, I, H, A, O]);
+    key(&mut s, "onKeyDown", 50); // 先选第 2 个候选 "你"(nihao 首位是 你好,第 2 位是 你)
+    let r = key(&mut s, "onKeyDown", 49); // 再选 好
+    assert_eq!(r["commitString"], "你好");
+}
