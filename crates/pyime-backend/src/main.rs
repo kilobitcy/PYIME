@@ -31,24 +31,43 @@ fn main() {
     let stdin = io::stdin();
     let mut stdout = io::stdout().lock();
     let mut sessions: HashMap<String, session::Session> = HashMap::new();
-    let mut log = log::Log::open();
+    log::init();
+    log::install_panic_hook();
+    log::line(&format!(
+        "启动 pyime-backend {} args={:?} exe={:?}",
+        env!("CARGO_PKG_VERSION"),
+        args,
+        std::env::current_exe().ok()
+    ));
 
     for line in stdin.lock().lines() {
-        let Ok(line) = line else { break };
-        log.line(&format!("> {line}"));
+        let line = match line {
+            Ok(l) => l,
+            Err(e) => {
+                log::line(&format!("读取 stdin 失败,退出: {e}"));
+                break;
+            }
+        };
+        log::line(&format!("> {line}"));
         let Some((id, req)) = protocol::parse_request(&line) else {
+            log::line("忽略:请求格式不合法");
             eprintln!("忽略无法解析的请求: {line}");
             continue;
         };
         // close 无需回复,只清理该连接的状态
         if req["method"] == "close" {
             sessions.remove(id);
+            log::line(&format!("close: 清理连接 {id},剩余 {} 个", sessions.len()));
             continue;
         }
-        let resp = sessions.entry(id.to_string()).or_default().handle(&req);
+        let sess = sessions.entry(id.to_string()).or_default();
+        let t = std::time::Instant::now();
+        let resp = sess.handle(&req);
         let out = protocol::format_response(id, &resp);
-        log.line(&format!("< {out}"));
+        log::line(&format!("< {out}"));
+        log::line(&format!("  状态: {} 耗时 {:?}", sess.debug_state(), t.elapsed()));
         let _ = writeln!(stdout, "{out}");
         let _ = stdout.flush();
     }
+    log::line("stdin 已关闭,退出");
 }

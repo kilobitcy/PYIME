@@ -5,6 +5,8 @@ const VK_BACK: i64 = 8;
 const VK_RETURN: i64 = 13;
 const VK_ESCAPE: i64 = 27;
 const VK_SPACE: i64 = 32;
+const VK_UP: i64 = 38;
+const VK_DOWN: i64 = 40;
 const CANDIDATES: [&str; 3] = ["测试", "候选", "拼音"];
 
 /// 数字键 1-9(主键盘或小键盘)对应的候选下标。
@@ -19,15 +21,22 @@ fn digit_index(key: i64) -> Option<usize> {
 #[derive(Default)]
 pub struct Session {
     composition: String,
+    /// 当前高亮的候选下标。
+    cursor: usize,
 }
 
 impl Session {
     /// 该键是否由输入法接管(有拼音串时,空格/回车/Esc/退格也接管)。
     fn wants_key(&self, key: i64) -> bool {
         let letter = (65..=90).contains(&key);
-        let editing = matches!(key, VK_BACK | VK_RETURN | VK_ESCAPE | VK_SPACE)
+        let editing = matches!(key, VK_BACK | VK_RETURN | VK_ESCAPE | VK_SPACE | VK_UP | VK_DOWN)
             || digit_index(key).is_some_and(|i| i < CANDIDATES.len());
         letter || (editing && !self.composition.is_empty())
+    }
+
+    /// 供日志使用的当前状态摘要。
+    pub fn debug_state(&self) -> String {
+        format!("composition={:?} cursor={}", self.composition, self.cursor)
     }
 
     pub fn handle(&mut self, req: &Value) -> Value {
@@ -51,7 +60,7 @@ impl Session {
         }
         match key {
             VK_SPACE => {
-                resp["commitString"] = json!(CANDIDATES[0]);
+                resp["commitString"] = json!(CANDIDATES[self.cursor]);
                 self.composition.clear();
             }
             VK_RETURN => {
@@ -59,6 +68,8 @@ impl Session {
                 self.composition.clear();
             }
             VK_ESCAPE => self.composition.clear(),
+            VK_UP => self.cursor = self.cursor.saturating_sub(1),
+            VK_DOWN => self.cursor = (self.cursor + 1).min(CANDIDATES.len() - 1),
             _ if digit_index(key).is_some() => {
                 resp["commitString"] = json!(CANDIDATES[digit_index(key).unwrap()]);
                 self.composition.clear();
@@ -68,11 +79,17 @@ impl Session {
             }
             _ => self.composition.push((key as u8 as char).to_ascii_lowercase()),
         }
+        // 输入内容变化、上屏或清空后,高亮回到第一个;上下键只移动高亮
+        if !matches!(key, VK_UP | VK_DOWN) {
+            self.cursor = 0;
+        }
         resp["compositionString"] = json!(self.composition);
         resp["compositionCursor"] = json!(self.composition.chars().count());
         resp["showCandidates"] = json!(!self.composition.is_empty());
         if !self.composition.is_empty() {
             resp["candidateList"] = json!(CANDIDATES);
+            resp["candidateCursor"] = json!(self.cursor);
+            resp["customizeUI"] = json!({ "candUseCursor": true });
         }
     }
 }
@@ -136,6 +153,40 @@ mod tests {
         let r = key(&mut s, "onKeyDown", VK_RETURN);
         assert_eq!(r["commitString"], "ni");
         assert_eq!(r["compositionString"], "");
+    }
+
+    #[test]
+    fn 下键移动高亮且不上屏() {
+        let mut s = Session::default();
+        key(&mut s, "onKeyDown", 78);
+        assert_eq!(key(&mut s, "filterKeyDown", VK_DOWN)["return"], true);
+        let r = key(&mut s, "onKeyDown", VK_DOWN);
+        assert_eq!(r["candidateCursor"], 1);
+        assert_eq!(r["compositionString"], "n");
+        assert!(r.get("commitString").is_none());
+    }
+
+    #[test]
+    fn 空格上屏当前高亮候选() {
+        let mut s = Session::default();
+        key(&mut s, "onKeyDown", 78);
+        key(&mut s, "onKeyDown", VK_DOWN);
+        assert_eq!(key(&mut s, "onKeyDown", VK_SPACE)["commitString"], "候选");
+    }
+
+    #[test]
+    fn 上键不越界且输入后高亮归零() {
+        let mut s = Session::default();
+        key(&mut s, "onKeyDown", 78);
+        assert_eq!(key(&mut s, "onKeyDown", VK_UP)["candidateCursor"], 0);
+        key(&mut s, "onKeyDown", VK_DOWN);
+        assert_eq!(key(&mut s, "onKeyDown", 73)["candidateCursor"], 0);
+    }
+
+    #[test]
+    fn 无拼音串时方向键不接管() {
+        let mut s = Session::default();
+        assert_eq!(key(&mut s, "filterKeyDown", VK_DOWN)["return"], false);
     }
 
     #[test]
