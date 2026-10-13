@@ -4,6 +4,7 @@ use pyime_engine::engine::Candidate;
 use serde_json::{json, Value};
 use std::rc::Rc;
 
+const VK_SHIFT_KEYS: [i64; 3] = [16, 160, 161];
 const VK_BACK: i64 = 8;
 const VK_RETURN: i64 = 13;
 const VK_ESCAPE: i64 = 27;
@@ -38,11 +39,15 @@ pub struct Session {
     page: usize,
     /// 页内高亮下标。
     cursor: usize,
+    /// 英文模式:所有按键放行给应用。
+    english: bool,
+    /// Shift 按下后尚未按过其他键,此时松开即视为"单击 Shift"。
+    shift_pending: bool,
 }
 
 impl Session {
     pub fn new(ime: Rc<Ime>) -> Session {
-        Session { ime, pending: String::new(), input: String::new(), cands: Vec::new(), page: 0, cursor: 0 }
+        Session { ime, pending: String::new(), input: String::new(), cands: Vec::new(), page: 0, cursor: 0, english: false, shift_pending: false }
     }
 
     fn composing(&self) -> bool {
@@ -59,9 +64,12 @@ impl Session {
     }
 
     /// 该键是否由输入法接管(拼音串存在时,编辑/翻页/数字键也接管)。
-    fn wants_key(&self, key: i64) -> bool {
+    fn wants_key(&self, key: i64, shift_down: bool) -> bool {
+        if self.english {
+            return false;
+        }
         if (65..=90).contains(&key) {
-            return true;
+            return self.composing() || !shift_down; // 未组词时 Shift+字母是大写,放行
         }
         let editing = matches!(
             key,
@@ -74,26 +82,46 @@ impl Session {
     /// 供日志使用的当前状态摘要。
     pub fn debug_state(&self) -> String {
         format!(
-            "pending={:?} input={:?} cands={} page={} cursor={}",
-            self.pending, self.input, self.cands.len(), self.page, self.cursor
+            "english={} pending={:?} input={:?} cands={} page={} cursor={}",
+            self.english, self.pending, self.input, self.cands.len(), self.page, self.cursor
         )
     }
 
     pub fn handle(&mut self, req: &Value) -> Value {
         let key = req["keyCode"].as_i64().unwrap_or(0);
+        let shift_down = req["keyStates"][16].as_u64().unwrap_or(0) & 0x80 != 0;
         let mut resp = json!({ "success": true, "seqNum": req["seqNum"] });
+        let is_shift = VK_SHIFT_KEYS.contains(&key);
         match req["method"].as_str().unwrap_or("") {
-            "filterKeyDown" => resp["return"] = json!(self.wants_key(key)),
-            "filterKeyUp" => resp["return"] = json!(false),
-            "onKeyDown" => {
-                resp["return"] = json!(self.wants_key(key));
-                if self.wants_key(key) {
+            m @ ("filterKeyDown" | "onKeyDown") => {
+                self.shift_pending = is_shift;
+                let wants = self.wants_key(key, shift_down);
+                resp["return"] = json!(wants);
+                if wants && m == "onKeyDown" {
                     self.on_key_down(key, &mut resp);
+                }
+            }
+            "filterKeyUp" | "onKeyUp" => {
+                resp["return"] = json!(false);
+                if is_shift && std::mem::take(&mut self.shift_pending) && req["method"] == "filterKeyUp" {
+                    self.toggle_english(&mut resp);
                 }
             }
             _ => {}
         }
         resp
+    }
+
+    /// 单击 Shift:切换中/英文;切到英文时把未上屏的内容按拼音原样上屏。
+    fn toggle_english(&mut self, resp: &mut Value) {
+        self.english = !self.english;
+        if self.english && self.composing() {
+            let text = self.flush_raw();
+            resp["commitString"] = json!(text);
+            resp["compositionString"] = json!("");
+            resp["compositionCursor"] = json!(0);
+            resp["showCandidates"] = json!(false);
+        }
     }
 
     fn refresh(&mut self) {

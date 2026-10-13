@@ -147,3 +147,44 @@ fn esc清空且无候选时空格上屏原串() {
     let r = press(&mut s, &[O, O, VK_SPACE]);
     assert_eq!(r["commitString"], "oo");
 }
+
+fn shift_click(s: &mut Session) -> Value {
+    key(s, "filterKeyDown", 16);
+    key(s, "filterKeyUp", 16)
+}
+
+#[test]
+fn 单击shift切换到英文后字母放行() {
+    let mut s = session();
+    shift_click(&mut s);
+    assert_eq!(key(&mut s, "filterKeyDown", N)["return"], false);
+    shift_click(&mut s);
+    assert_eq!(key(&mut s, "filterKeyDown", N)["return"], true);
+}
+
+#[test]
+fn shift配合其他键不切换() {
+    let mut s = session();
+    key(&mut s, "filterKeyDown", 16);
+    key(&mut s, "filterKeyDown", N); // Shift+N
+    key(&mut s, "filterKeyUp", 16);
+    assert_eq!(key(&mut s, "filterKeyDown", N)["return"], true);
+}
+
+#[test]
+fn 组词中切英文把拼音原样上屏() {
+    let mut s = session();
+    press(&mut s, &[N, I]);
+    let r = shift_click(&mut s);
+    assert_eq!(r["commitString"], "ni");
+    assert_eq!(r["showCandidates"], false);
+}
+
+#[test]
+fn 未组词时shift加字母放行大写() {
+    let mut s = session();
+    let mut states = vec![0; 256];
+    states[16] = 128;
+    let r = s.handle(&json!({"method": "filterKeyDown", "seqNum": 1, "keyCode": N, "keyStates": states}));
+    assert_eq!(r["return"], false);
+}

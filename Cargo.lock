@@ -31,7 +31,7 @@ dependencies = [
 
 [[package]]
 name = "pyime-backend"
-version = "0.1.3"
+version = "0.1.4"
 dependencies = [
  "pyime-engine",
  "serde_json",
@@ -39,7 +39,7 @@ dependencies = [
 
 [[package]]
 name = "pyime-engine"
-version = "0.1.3"
+version = "0.1.4"
 dependencies = [
  "fst",
 ]
