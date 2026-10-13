@@ -3,6 +3,7 @@ use crate::log;
 use pyime_engine::dict::{Dict, DictBuilder};
 use pyime_engine::engine::{Candidate, Engine};
 use pyime_engine::fuzzy::FuzzyConfig;
+use pyime_engine::gram::Gram;
 use pyime_engine::user::UserModel;
 use std::cell::RefCell;
 use std::path::PathBuf;
@@ -16,6 +17,11 @@ pub struct Ime {
 /// 词典随安装包放在 `server.exe` 同目录。
 fn dict_path() -> Option<PathBuf> {
     Some(std::env::current_exe().ok()?.parent()?.join("pyime.dict"))
+}
+
+/// 可选的语法模型(octagram 格式),放在词典旁;没有就不做搭配加分。
+fn gram_path() -> Option<PathBuf> {
+    Some(std::env::current_exe().ok()?.parent()?.join("pyime.gram"))
 }
 
 fn user_path() -> Option<PathBuf> {
@@ -38,6 +44,12 @@ impl Ime {
     pub fn load() -> Rc<Ime> {
         let t = std::time::Instant::now();
         let mut engine = Engine::new(load_dict(), FuzzyConfig::default());
+        if let Some(p) = gram_path().filter(|p| p.exists()) {
+            match std::fs::read(&p).map_err(|e| e.to_string()).and_then(Gram::from_bytes) {
+                Ok(g) => engine.set_gram(g),
+                Err(e) => log::line(&format!("语法模型 {p:?} 无效: {e}")),
+            }
+        }
         let user_path = user_path();
         if let Some(text) = user_path.as_ref().and_then(|p| std::fs::read_to_string(p).ok()) {
             engine.set_user(UserModel::import(&text));
@@ -52,8 +64,8 @@ impl Ime {
         Rc::new(Ime { engine: RefCell::new(engine), user_path: None })
     }
 
-    pub fn candidates(&self, input: &str) -> Vec<Candidate> {
-        self.engine.borrow().candidates(input)
+    pub fn candidates(&self, input: &str, context: &str) -> Vec<Candidate> {
+        self.engine.borrow().candidates_after(input, context)
     }
 
     /// 学习一次选择并存盘;存盘失败只记日志。

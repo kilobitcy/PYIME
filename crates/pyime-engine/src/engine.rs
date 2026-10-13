@@ -1,7 +1,8 @@
 //! 候选生成:切分格 + 模糊展开 + 词典查询 + 整句 Viterbi,精确匹配优先、模糊匹配降权。
 use crate::dict::Dict;
+use crate::gram::Gram;
 use crate::fuzzy::{partial, variants, FuzzyConfig};
-use crate::pinyin::syllables_at;
+use crate::pinyin::{is_syllable, syllables_at};
 use crate::user::UserModel;
 
 /// 每次模糊替换的惩罚(自然对数域,约等于词频缩小 e^4 ≈ 55 倍)。
@@ -21,6 +22,13 @@ const MAX_SYLLABLES: usize = 10;
 /// 返回候选数上限。
 /// 整句候选最多几条。
 const SENTENCES: usize = 3;
+/// 束宽:整句搜索每个位置保留的路径数。
+const BEAM: usize = 12;
+/// 模糊/残缺路径的束宽。
+const LOOSE_BEAM: usize = 8;
+/// 语法模型搭配加分的权重(模型值是 ln 次数,单字词频偏高,需放大才能纠正)。
+pub const GRAM_THRESHOLD: f64 = 0.0;
+pub const GRAM_WEIGHT: f64 = 0.6;
 const MAX_CANDIDATES: usize = 60;
 
 #[derive(Debug, Clone, PartialEq)]
@@ -39,17 +47,38 @@ struct Word {
     text: String,
     score: f64,
     fuzzy: u8,
+    /// 末尾残缺音节凑出来的词,不算"精确"。
+    partial: bool,
 }
 
 pub struct Engine {
     dict: Dict,
     cfg: FuzzyConfig,
     user: UserModel,
+    gram: Option<Gram>,
+    gram_weight: f64,
+    gram_threshold: f64,
 }
 
 impl Engine {
     pub fn new(dict: Dict, cfg: FuzzyConfig) -> Engine {
-        Engine { dict, cfg, user: UserModel::default() }
+        Engine { dict, cfg, user: UserModel::default(), gram: None, gram_weight: GRAM_WEIGHT, gram_threshold: GRAM_THRESHOLD }
+    }
+
+    pub fn set_gram(&mut self, gram: Gram) {
+        self.gram = Some(gram);
+    }
+
+    pub fn set_gram_weight(&mut self, w: f64) {
+        self.gram_weight = w;
+    }
+
+    pub fn set_gram_threshold(&mut self, t: f64) {
+        self.gram_threshold = t;
+    }
+
+    fn gram_bonus(&self, ctx: &str, w: &str) -> f64 {
+        self.gram.as_ref().map_or(0.0, |g| self.gram_weight * (g.bonus(ctx, w) - self.gram_threshold).max(0.0))
     }
 
     pub fn set_user(&mut self, user: UserModel) {
@@ -70,13 +99,19 @@ impl Engine {
         if pos >= input.len() {
             return;
         }
-        for (syl, c) in partial(&input[pos..], &self.cfg) {
+        let rest = &input[pos..];
+        // 本身就是完整音节时,它(及其模糊写法)已由 grow 按完整音节处理,不再当残缺重复一遍
+        let complete: Vec<String> = if is_syllable(rest) { variants(rest, &self.cfg).into_iter().map(|v| v.0).collect() } else { Vec::new() };
+        for (syl, c) in partial(rest, &self.cfg) {
+            if complete.iter().any(|k| k == syl) {
+                continue;
+            }
             let next = if key.is_empty() { syl.to_string() } else { format!("{key} {syl}") };
             let f = fuzzy + c;
             for e in self.dict.get(&next).into_iter().take(PER_KEY) {
                 let bonus = self.user.bonus(&input[start..], &e.word);
                 let score = f64::from(e.weight.max(1)).ln() - FUZZY_PENALTY * f64::from(f) - PARTIAL_PENALTY + bonus - if key.is_empty() { SINGLE_CHAR_DISCOUNT } else { 0.0 };
-                out.push(Word { start, end: input.len(), text: e.word, score, fuzzy: f });
+                out.push(Word { start, end: input.len(), text: e.word, score, fuzzy: f, partial: true });
             }
         }
     }
@@ -95,7 +130,7 @@ impl Engine {
                 for e in self.dict.get(&next).into_iter().take(PER_KEY) {
                     let bonus = self.user.bonus(&input[start..end], &e.word);
                     let score = f64::from(e.weight.max(1)).ln() - FUZZY_PENALTY * f64::from(f) + bonus - if depth == 0 { SINGLE_CHAR_DISCOUNT } else { 0.0 };
-                    out.push(Word { start, end, text: e.word, score, fuzzy: f });
+                    out.push(Word { start, end, text: e.word, score, fuzzy: f, partial: false });
                 }
                 if depth + 1 < MAX_SYLLABLES {
                     self.grow(input, start, end, &next, f, depth + 1, out);
@@ -106,6 +141,11 @@ impl Engine {
 
     /// 以 `input`(小写拼音)生成候选:整句最优、整段词、再是较短前缀的词。
     pub fn candidates(&self, input: &str) -> Vec<Candidate> {
+        self.candidates_after(input, "")
+    }
+
+    /// 同 `candidates`,`context` 是光标前已上屏的文字,用于首词的搭配加分。
+    pub fn candidates_after(&self, input: &str, context: &str) -> Vec<Candidate> {
         let mut words = Vec::new();
         let mut reach = vec![false; input.len() + 1];
         reach[0] = true;
@@ -120,7 +160,12 @@ impl Engine {
         }
         for (typed, text, bonus) in self.user.matching(input) {
             if !words.iter().any(|w| w.start == 0 && w.end == typed.len() && w.text == text) {
-                words.push(Word { start: 0, end: typed.len(), text: text.to_string(), score: USER_PHRASE_BASE + bonus, fuzzy: 0 });
+                words.push(Word { start: 0, end: typed.len(), text: text.to_string(), score: USER_PHRASE_BASE + bonus, fuzzy: 0, partial: false });
+            }
+        }
+        if self.gram.is_some() && !context.is_empty() {
+            for w in words.iter_mut().filter(|w| w.start == 0) {
+                w.score += self.gram_bonus(context, &w.text);
             }
         }
         self.assemble(&words)
@@ -128,8 +173,10 @@ impl Engine {
 
     fn assemble(&self, words: &[Word]) -> Vec<Candidate> {
         let Some(far) = words.iter().map(|w| w.end).max() else { return Vec::new() };
-        let scored = sentences(words, far);
+        let bigram = |ctx: &str, w: &str| self.gram_bonus(ctx, w);
+        let scored = sentences(words, far, &bigram);
         let top_sentence = scored.first().map(|s| s.1);
+        let top_exact = scored.first().is_some_and(|s| s.2);
         let sents: Vec<Candidate> = scored.into_iter().map(|s| s.0).collect();
         let mut firsts: Vec<&Word> = words.iter().filter(|w| w.start == 0).collect();
         firsts.sort_by(|a, b| b.end.cmp(&a.end).then(b.score.total_cmp(&a.score)));
@@ -138,7 +185,7 @@ impl Engine {
         // 没有精确的整段词、整句完全精确且得分高于最佳整段词时,整句排最前;否则整句紧跟整段词
         let exact_whole = whole.iter().any(|w| w.fuzzy == 0);
         let best_whole = whole.iter().map(|w| w.score - WORD_COST).fold(f64::MIN, f64::max);
-        let front = !exact_whole && sents.first().is_some_and(|s| s.fuzzy == 0) && top_sentence.is_some_and(|t| t > best_whole);
+        let front = !exact_whole && top_exact && top_sentence.is_some_and(|t| t > best_whole);
         let groups: [Vec<Candidate>; 3] = if front {
             [sents, whole.iter().map(as_cand).collect(), rest.iter().map(as_cand).collect()]
         } else {
@@ -154,42 +201,63 @@ impl Engine {
     }
 }
 
-/// 在 [0, far] 上做 k 最优 Viterbi,返回至多 `SENTENCES` 条拆成 ≥2 个词的整句(得分从高到低)。
-fn sentences(words: &[Word], far: usize) -> Vec<(Candidate, f64)> {
-    // best[pos] = 到达 pos 的前 SENTENCES 条路径:(得分, 词下标, 前驱位置上的名次)
-    let mut best: Vec<Vec<(f64, usize, usize)>> = vec![Vec::new(); far + 1];
+/// 在 [0, far] 上做束搜索 Viterbi,返回至多 `SENTENCES` 条拆成 ≥2 个词的整句(得分从高到低)。
+/// `bigram(上文, 词)` 给相邻词的搭配加分。
+fn sentences(words: &[Word], far: usize, bigram: &dyn Fn(&str, &str) -> f64) -> Vec<(Candidate, f64, bool)> {
+    // best[pos] = 到达 pos 的前 BEAM 条路径:(得分, 词下标, 前驱位置上的名次, 路径末尾几个字)
+    let mut best: Vec<Vec<(f64, usize, usize, String, bool)>> = vec![Vec::new(); far + 1];
     let mut order: Vec<usize> = (0..words.len()).filter(|&i| words[i].end <= far).collect();
     order.sort_by_key(|&i| words[i].start);
     for &i in &order {
         let w = &words[i];
-        let prevs: Vec<(f64, usize)> = if w.start == 0 {
-            vec![(0.0, 0)]
+        let mut next = Vec::new();
+        if w.start == 0 {
+            next.push((w.score - WORD_COST, i, 0, tail(&w.text), w.fuzzy > 0 || w.partial));
         } else {
-            best[w.start].iter().enumerate().map(|(r, p)| (p.0, r)).collect()
-        };
-        for (base, rank) in prevs {
-            best[w.end].push((base + w.score - WORD_COST, i, rank));
+            for (r, p) in best[w.start].iter().enumerate() {
+                let total = p.0 + w.score - WORD_COST + bigram(&p.3, &w.text);
+                next.push((total, i, r, tail(&format!("{}{}", p.3, w.text)), p.4 || w.fuzzy > 0 || w.partial));
+            }
         }
+        best[w.end].extend(next);
         best[w.end].sort_by(|a, b| b.0.total_cmp(&a.0));
-        best[w.end].truncate(SENTENCES);
+        // 精确路径与模糊/残缺路径分开留束,避免模糊路径被大量精确噪声挤出
+        let (mut exact, loose): (Vec<_>, Vec<_>) = std::mem::take(&mut best[w.end]).into_iter().partition(|p| !p.4);
+        exact.truncate(BEAM);
+        exact.extend(loose.into_iter().take(LOOSE_BEAM));
+        exact.sort_by(|a, b| b.0.total_cmp(&a.0));
+        best[w.end] = exact;
     }
-    let mut out: Vec<(Candidate, f64)> = Vec::new();
+    let mut out: Vec<(Candidate, f64, bool)> = Vec::new();
     for r in 0..best[far].len() {
         let (mut pos, mut rank) = (far, r);
-        let (mut parts, mut fuzzy) = (Vec::new(), 0u8);
+        let (mut parts, mut fuzzy, mut partial) = (Vec::new(), 0u8, false);
         while pos > 0 {
-            let (_, wi, prev_rank) = best[pos][rank];
-            let w = &words[wi];
+            let (_, wi, prev_rank, _, _) = &best[pos][rank];
+            let w = &words[*wi];
             parts.push(w.text.as_str());
             fuzzy = fuzzy.saturating_add(w.fuzzy);
-            (pos, rank) = (w.start, prev_rank);
+            partial |= w.partial;
+            (pos, rank) = (w.start, *prev_rank);
         }
         let text: String = parts.iter().rev().copied().collect();
-        if parts.len() >= 2 && !out.iter().any(|c| c.0.text == text) {
-            out.push((Candidate { text, consumed: far, fuzzy }, best[far][r].0));
+        if parts.len() >= 2 && out.len() < BEAM && !out.iter().any(|c| c.0.text == text) {
+            out.push((Candidate { text, consumed: far, fuzzy }, best[far][r].0, fuzzy == 0 && !partial));
         }
     }
-    out
+    // 三档:精确 / 仅模糊 / 含残缺音节;各档按得分,取 3+2+1 条,免得被前一档的噪声挤掉
+    let class = |s: &(Candidate, f64, bool)| if s.2 { 0 } else if s.0.fuzzy > 0 { 1 } else { 2 };
+    let mut picked = Vec::new();
+    for (c, quota) in [(0, SENTENCES), (1, 2), (2, 1)] {
+        picked.extend(out.iter().filter(|s| class(s) == c).take(quota).cloned());
+    }
+    picked
+}
+
+/// 取末尾 3 个字作为下一词的上文。
+fn tail(s: &str) -> String {
+    let n = s.chars().count();
+    s.chars().skip(n.saturating_sub(3)).collect()
 }
 
 #[cfg(test)]

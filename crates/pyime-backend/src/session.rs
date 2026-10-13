@@ -38,6 +38,8 @@ pub struct Session {
     cands: Vec<Candidate>,
     /// 本次组词累计键入并已选定的拼音,用于分段选完后学习整句。
     typed_all: String,
+    /// 刚上屏文字的末尾几个字,作为下一次组词的上文(搭配加分用)。
+    context: String,
     segments: usize,
     page: usize,
     /// 页内高亮下标。
@@ -50,7 +52,7 @@ pub struct Session {
 
 impl Session {
     pub fn new(ime: Rc<Ime>) -> Session {
-        Session { ime, pending: String::new(), input: String::new(), cands: Vec::new(), typed_all: String::new(), segments: 0, page: 0, cursor: 0, english: false, shift_pending: false }
+        Session { ime, pending: String::new(), input: String::new(), cands: Vec::new(), typed_all: String::new(), context: String::new(), segments: 0, page: 0, cursor: 0, english: false, shift_pending: false }
     }
 
     fn composing(&self) -> bool {
@@ -128,7 +130,7 @@ impl Session {
     }
 
     fn refresh(&mut self) {
-        self.cands = if self.input.is_empty() { Vec::new() } else { self.ime.candidates(&self.input) };
+        self.cands = if self.input.is_empty() { Vec::new() } else { self.ime.candidates(&self.input, &self.context) };
         self.page = 0;
         self.cursor = 0;
     }
@@ -149,6 +151,7 @@ impl Session {
             }
             self.typed_all.clear();
             self.segments = 0;
+            self.context = text.chars().rev().take(3).collect::<Vec<_>>().into_iter().rev().collect();
             return Some(text);
         }
         self.refresh();
@@ -184,6 +187,7 @@ impl Session {
         self.input.clear();
         self.typed_all.clear();
         self.segments = 0;
+        self.context.clear();
         text
     }
 

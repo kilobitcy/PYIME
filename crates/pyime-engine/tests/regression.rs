@@ -12,6 +12,29 @@ const CASES: &[(&str, &str, usize)] = &[
     ("woaini", "我爱你", 1),
     ("jintiantianqihenhao", "今天天气很好", 1),
     ("fujian", "福建", 3),
+    ("nihao", "你好", 1),
+    ("woxiangquguangzhou", "我想去广州", 1),
+    ("tamenzaichifan", "他们在吃饭", 1),
+    ("xiexienin", "谢谢您", 1),
+    ("wozaijia", "我在家", 1),
+    ("mingtianjian", "明天见", 1),
+    ("zhidaole", "知道了", 1),
+    ("bukeqi", "不客气", 1),
+    ("woxihuanni", "我喜欢你", 1),
+    ("haojiubujian", "好久不见", 1),
+    ("zaijian", "再见", 1),
+    ("zaiyici", "再一次", 1),
+    ("zaishuoyibian", "再说一遍", 1),
+    ("weishenme", "为什么", 1),
+    ("shenmeshihou", "什么时候", 1),
+    ("xianzai", "现在", 1),
+    ("zaizuijia", "再追加", 2), // 模糊 zui→zhui
+    ("fengzhong", "分钟", 1),   // 模糊 en→eng
+    ("nanse", "蓝色", 3),       // 模糊 n→l
+    ("yijingzhuijia", "已经追加", 1),
+    ("woyaoshuijiao", "我要睡觉", 1),
+    ("jintianxingqijia", "今天星期几", 1),
+    ("zhuijia", "追加", 1),
     ("zaizhuijia", "再追加", 2), // 用户期望第 1:需 bigram 或学习一次
 ];
 
@@ -19,7 +42,16 @@ const CASES: &[(&str, &str, usize)] = &[
 #[ignore]
 fn 回归用例() {
     let path = std::env::var("PYIME_DICT").expect("需设置 PYIME_DICT");
-    let engine = Engine::new(Dict::from_bytes(std::fs::read(path).unwrap()).unwrap(), FuzzyConfig::default());
+    let mut engine = Engine::new(Dict::from_bytes(std::fs::read(path).unwrap()).unwrap(), FuzzyConfig::default());
+    if let Ok(g) = std::env::var("PYIME_GRAM") {
+        engine.set_gram(pyime_engine::gram::Gram::from_bytes(std::fs::read(g).unwrap()).unwrap());
+    }
+    if let Ok(w) = std::env::var("PYIME_GRAM_WEIGHT") {
+        engine.set_gram_weight(w.parse().unwrap());
+    }
+    if let Ok(w) = std::env::var("PYIME_GRAM_T") {
+        engine.set_gram_threshold(w.parse().unwrap());
+    }
     let mut bad = Vec::new();
     for &(input, want, max) in CASES {
         let rank = engine.candidates(input).iter().position(|c| c.text == want).map(|i| i + 1);
@@ -27,5 +59,6 @@ fn 回归用例() {
             bad.push(format!("{input} → {want}: 名次 {rank:?},要求 ≤{max}"));
         }
     }
+    println!("通过 {}/{}", CASES.len() - bad.len(), CASES.len());
     assert!(bad.is_empty(), "{}", bad.join("\n"));
 }

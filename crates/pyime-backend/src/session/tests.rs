@@ -111,9 +111,9 @@ fn 下键越过页尾进入下一页() {
 #[test]
 fn 分段选词_剩余拼音继续_全部选完才上屏() {
     let mut s = session();
-    press(&mut s, &[N, I, H, A, O, VK_DOWN]); // nihao,首选 你好,下移到 你
-    assert_eq!(s.debug_state().contains("input=\"nihao\""), true);
-    let r = key(&mut s, "onKeyDown", 49 + 1); // 选第 2 个
+    let r = press(&mut s, &[N, I, H, A, O]);
+    let pos = r["candidateList"].as_array().unwrap().iter().position(|c| c == "你").unwrap();
+    let r = key(&mut s, "onKeyDown", 49 + pos as i64); // 选 你(只消耗 ni)
     assert!(r.get("commitString").is_none());
     assert_eq!(r["compositionString"], "你hao");
     let r = key(&mut s, "onKeyDown", 49);
@@ -192,8 +192,9 @@ fn 未组词时shift加字母放行大写() {
 #[test]
 fn 分段选完后整句被学习() {
     let mut s = session();
-    press(&mut s, &[N, I, H, A, O]);
-    key(&mut s, "onKeyDown", 50); // 先选第 2 个候选 "你"(nihao 首位是 你好,第 2 位是 你)
+    let r = press(&mut s, &[N, I, H, A, O]);
+    let pos = r["candidateList"].as_array().unwrap().iter().position(|c| c == "你").unwrap();
+    key(&mut s, "onKeyDown", 49 + pos as i64); // 先选 你
     let r = key(&mut s, "onKeyDown", 49); // 再选 好
     assert_eq!(r["commitString"], "你好");
 }
