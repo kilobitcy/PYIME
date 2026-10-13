@@ -1,6 +1,6 @@
 {
 	"name": "PYIME 拼音",
-	"version": "0.1.4",
+	"version": "0.1.5",
 	"guid": "{73964C39-2D86-4178-953A-EA2E9E2BECE8}",
 	"locale": "zh-Hans-CN",
 	"fallbackLocale": "zh-CN",
