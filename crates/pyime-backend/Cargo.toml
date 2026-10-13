@@ -1,8 +1,9 @@
 [package]
 name = "pyime-backend"
-version = "0.1.2"
+version = "0.1.3"
 edition = "2021"
 license = "GPL-3.0-only"
 
 [dependencies]
 serde_json = "1"
+pyime-engine = { path = "../pyime-engine" }

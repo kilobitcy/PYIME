@@ -1,3 +1,4 @@
+mod ime;
 mod log;
 mod protocol;
 mod register;
@@ -33,6 +34,7 @@ fn main() {
     let mut sessions: HashMap<String, session::Session> = HashMap::new();
     log::init();
     log::install_panic_hook();
+    let ime = ime::Ime::load();
     log::line(&format!(
         "启动 pyime-backend {} args={:?} exe={:?}",
         env!("CARGO_PKG_VERSION"),
@@ -63,7 +65,7 @@ fn main() {
             log::line(&format!("close: 清理连接 {id},剩余 {} 个", sessions.len()));
             continue;
         }
-        let sess = sessions.entry(id.to_string()).or_default();
+        let sess = sessions.entry(id.to_string()).or_insert_with(|| session::Session::new(ime.clone()));
         let t = std::time::Instant::now();
         let resp = sess.handle(&req);
         let out = protocol::format_response(id, &resp);

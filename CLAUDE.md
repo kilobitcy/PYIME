@@ -12,7 +12,10 @@ Windows 11 拼音输入法。目标:界面与功能像微信输入法一样简�
 - 安装形态:附加安装包 `PYIME-<版本>-setup.exe`,装进已安装的官方 PIME **1.3.0-stable**(往其 `backends.json` 登记后端并重新 `regsvr32`)。
 
 ## Project Layout
-(待建立,随代码补充)
+- `crates/pyime-engine`:引擎(`dict` fst 词典、`rime` 词库导入、`pinyin` 音节表与切分格、`fuzzy` 10 对模糊音、`engine` 候选生成与整句 Viterbi、`user` 用户学习);`pyime-dict-build` 编译词典。
+- `crates/pyime-backend`:PIME 后端(`protocol`/`session`/`ime`/`log`/`register`);词典 `pyime.dict` 放在 `server.exe` 同目录,用户数据 `%LOCALAPPDATA%\PYIME\user.txt`。
+- `scripts/package.sh <版本>`:测试 + 交叉编译 + 编词典 + makensis 一条龙(rime-ice 默认在 /tmp/rime-ice)。
+- 调参观察:`PYIME_DICT=… cargo test -p pyime-engine --release --test real_engine -- --ignored --nocapture`(`PYIME_INPUTS` 指定拼音)。
 
 ## Commands
 ```bash

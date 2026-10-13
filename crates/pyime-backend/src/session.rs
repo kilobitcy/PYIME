@@ -1,17 +1,25 @@
-//! 单个前端连接的会话状态。当前为验证用的最小实现:固定候选,验证 PIME 链路能出字。
+//! 单个前端连接的会话状态:拼音串、候选、分页与选词。
+use crate::ime::Ime;
+use pyime_engine::engine::Candidate;
 use serde_json::{json, Value};
+use std::rc::Rc;
 
 const VK_BACK: i64 = 8;
 const VK_RETURN: i64 = 13;
 const VK_ESCAPE: i64 = 27;
 const VK_SPACE: i64 = 32;
+const VK_PRIOR: i64 = 33;
+const VK_NEXT: i64 = 34;
 const VK_UP: i64 = 38;
 const VK_DOWN: i64 = 40;
-/// 候选横排,每行个数(微信输入法每页 5 个)。
-const CANDS_PER_ROW: i64 = 5;
-const CANDIDATES: [&str; 3] = ["测试", "候选", "拼音"];
+const VK_EQUALS: i64 = 187;
+const VK_MINUS: i64 = 189;
+const VK_LBRACKET: i64 = 219;
+const VK_RBRACKET: i64 = 221;
+/// 候选横排,每页个数(与微信输入法一致)。
+const PAGE_SIZE: usize = 5;
 
-/// 数字键 1-9(主键盘或小键盘)对应的候选下标。
+/// 数字键 1-9(主键盘或小键盘)对应的页内下标。
 fn digit_index(key: i64) -> Option<usize> {
     match key {
         49..=57 => Some((key - 49) as usize),
@@ -20,25 +28,55 @@ fn digit_index(key: i64) -> Option<usize> {
     }
 }
 
-#[derive(Default)]
 pub struct Session {
-    composition: String,
-    /// 当前高亮的候选下标。
+    ime: Rc<Ime>,
+    /// 已选定、尚未上屏的文字(分段选词时累积)。
+    pending: String,
+    /// 尚未转换的拼音字母。
+    input: String,
+    cands: Vec<Candidate>,
+    page: usize,
+    /// 页内高亮下标。
     cursor: usize,
 }
 
 impl Session {
-    /// 该键是否由输入法接管(有拼音串时,空格/回车/Esc/退格也接管)。
+    pub fn new(ime: Rc<Ime>) -> Session {
+        Session { ime, pending: String::new(), input: String::new(), cands: Vec::new(), page: 0, cursor: 0 }
+    }
+
+    fn composing(&self) -> bool {
+        !self.input.is_empty() || !self.pending.is_empty()
+    }
+
+    fn page_items(&self) -> &[Candidate] {
+        let start = (self.page * PAGE_SIZE).min(self.cands.len());
+        &self.cands[start..(start + PAGE_SIZE).min(self.cands.len())]
+    }
+
+    fn page_count(&self) -> usize {
+        self.cands.len().div_ceil(PAGE_SIZE)
+    }
+
+    /// 该键是否由输入法接管(拼音串存在时,编辑/翻页/数字键也接管)。
     fn wants_key(&self, key: i64) -> bool {
-        let letter = (65..=90).contains(&key);
-        let editing = matches!(key, VK_BACK | VK_RETURN | VK_ESCAPE | VK_SPACE | VK_UP | VK_DOWN)
-            || digit_index(key).is_some_and(|i| i < CANDIDATES.len());
-        letter || (editing && !self.composition.is_empty())
+        if (65..=90).contains(&key) {
+            return true;
+        }
+        let editing = matches!(
+            key,
+            VK_BACK | VK_RETURN | VK_ESCAPE | VK_SPACE | VK_UP | VK_DOWN | VK_PRIOR | VK_NEXT
+                | VK_EQUALS | VK_MINUS | VK_LBRACKET | VK_RBRACKET
+        ) || digit_index(key).is_some_and(|i| i < self.page_items().len());
+        editing && self.composing()
     }
 
     /// 供日志使用的当前状态摘要。
     pub fn debug_state(&self) -> String {
-        format!("composition={:?} cursor={}", self.composition, self.cursor)
+        format!(
+            "pending={:?} input={:?} cands={} page={} cursor={}",
+            self.pending, self.input, self.cands.len(), self.page, self.cursor
+        )
     }
 
     pub fn handle(&mut self, req: &Value) -> Value {
@@ -49,160 +87,107 @@ impl Session {
             "filterKeyUp" => resp["return"] = json!(false),
             "onKeyDown" => {
                 resp["return"] = json!(self.wants_key(key));
-                self.on_key_down(key, &mut resp);
+                if self.wants_key(key) {
+                    self.on_key_down(key, &mut resp);
+                }
             }
             _ => {}
         }
         resp
     }
 
+    fn refresh(&mut self) {
+        self.cands = if self.input.is_empty() { Vec::new() } else { self.ime.candidates(&self.input) };
+        self.page = 0;
+        self.cursor = 0;
+    }
+
+    /// 选中页内第 `idx` 个候选;输入耗尽时返回应上屏的文字。
+    fn select(&mut self, idx: usize) -> Option<String> {
+        let c = self.page_items().get(idx)?.clone();
+        let typed: String = self.input.drain(..c.consumed).collect();
+        self.ime.learn(&typed, &c.text);
+        self.pending.push_str(&c.text);
+        if self.input.is_empty() {
+            self.cands.clear();
+            return Some(std::mem::take(&mut self.pending));
+        }
+        self.refresh();
+        None
+    }
+
+    fn turn_page(&mut self, forward: bool) {
+        let last = self.page_count().saturating_sub(1);
+        self.page = if forward { (self.page + 1).min(last) } else { self.page.saturating_sub(1) };
+        self.cursor = 0;
+    }
+
+    fn move_cursor(&mut self, down: bool) {
+        let len = self.page_items().len();
+        if down {
+            if self.cursor + 1 < len {
+                self.cursor += 1;
+            } else if self.page + 1 < self.page_count() {
+                self.turn_page(true);
+            }
+        } else if self.cursor > 0 {
+            self.cursor -= 1;
+        } else if self.page > 0 {
+            self.turn_page(false);
+            self.cursor = self.page_items().len().saturating_sub(1);
+        }
+    }
+
+    fn flush_raw(&mut self) -> String {
+        self.cands.clear();
+        let text = format!("{}{}", self.pending, self.input);
+        self.pending.clear();
+        self.input.clear();
+        text
+    }
+
     fn on_key_down(&mut self, key: i64, resp: &mut Value) {
-        if !self.wants_key(key) {
-            return;
-        }
+        let mut commit: Option<String> = None;
         match key {
-            VK_SPACE => {
-                resp["commitString"] = json!(CANDIDATES[self.cursor]);
-                self.composition.clear();
+            VK_SPACE if self.cands.is_empty() => commit = Some(self.flush_raw()),
+            VK_SPACE => commit = self.select(self.cursor),
+            VK_RETURN => commit = Some(self.flush_raw()),
+            VK_ESCAPE => {
+                self.flush_raw();
             }
-            VK_RETURN => {
-                resp["commitString"] = json!(self.composition);
-                self.composition.clear();
-            }
-            VK_ESCAPE => self.composition.clear(),
-            VK_UP => self.cursor = self.cursor.saturating_sub(1),
-            VK_DOWN => self.cursor = (self.cursor + 1).min(CANDIDATES.len() - 1),
-            _ if digit_index(key).is_some() => {
-                resp["commitString"] = json!(CANDIDATES[digit_index(key).unwrap()]);
-                self.composition.clear();
-            }
+            VK_UP => self.move_cursor(false),
+            VK_DOWN => self.move_cursor(true),
+            VK_PRIOR | VK_MINUS | VK_LBRACKET => self.turn_page(false),
+            VK_NEXT | VK_EQUALS | VK_RBRACKET => self.turn_page(true),
             VK_BACK => {
-                self.composition.pop();
+                self.input.pop();
+                if self.input.is_empty() {
+                    commit = Some(self.flush_raw()).filter(|t| !t.is_empty());
+                } else {
+                    self.refresh();
+                }
             }
-            _ => self.composition.push((key as u8 as char).to_ascii_lowercase()),
+            _ if digit_index(key).is_some() => commit = self.select(digit_index(key).unwrap()),
+            _ => {
+                self.input.push((key as u8 as char).to_ascii_lowercase());
+                self.refresh();
+            }
         }
-        // 输入内容变化、上屏或清空后,高亮回到第一个;上下键只移动高亮
-        if !matches!(key, VK_UP | VK_DOWN) {
-            self.cursor = 0;
+        if let Some(text) = commit.filter(|t| !t.is_empty()) {
+            resp["commitString"] = json!(text);
         }
-        resp["compositionString"] = json!(self.composition);
-        resp["compositionCursor"] = json!(self.composition.chars().count());
-        resp["showCandidates"] = json!(!self.composition.is_empty());
-        if !self.composition.is_empty() {
-            resp["candidateList"] = json!(CANDIDATES);
+        let shown = format!("{}{}", self.pending, self.input);
+        resp["compositionString"] = json!(shown);
+        resp["compositionCursor"] = json!(shown.chars().count());
+        resp["showCandidates"] = json!(!self.cands.is_empty());
+        if !self.cands.is_empty() {
+            let texts: Vec<&str> = self.page_items().iter().map(|c| c.text.as_str()).collect();
+            resp["candidateList"] = json!(texts);
             resp["candidateCursor"] = json!(self.cursor);
-            resp["customizeUI"] = json!({ "candUseCursor": true, "candPerRow": CANDS_PER_ROW });
+            resp["customizeUI"] = json!({ "candUseCursor": true, "candPerRow": PAGE_SIZE });
         }
     }
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn key(s: &mut Session, method: &str, code: i64) -> Value {
-        s.handle(&json!({"method": method, "seqNum": 7, "keyCode": code}))
-    }
-
-    #[test]
-    fn 字母键被接管并进入拼音串() {
-        let mut s = Session::default();
-        assert_eq!(key(&mut s, "filterKeyDown", 65)["return"], true);
-        let r = key(&mut s, "onKeyDown", 65);
-        assert_eq!(r["compositionString"], "a");
-        assert_eq!(r["seqNum"], 7);
-        assert_eq!(r["candidateList"][0], "测试");
-    }
-
-    #[test]
-    fn 无拼音串时空格不接管() {
-        let mut s = Session::default();
-        assert_eq!(key(&mut s, "filterKeyDown", VK_SPACE)["return"], false);
-    }
-
-    #[test]
-    fn 空格上屏首选并清空() {
-        let mut s = Session::default();
-        key(&mut s, "onKeyDown", 78);
-        let r = key(&mut s, "onKeyDown", VK_SPACE);
-        assert_eq!(r["commitString"], "测试");
-        assert_eq!(r["compositionString"], "");
-        assert_eq!(r["showCandidates"], false);
-    }
-
-    #[test]
-    fn 数字键选择对应候选上屏() {
-        let mut s = Session::default();
-        key(&mut s, "onKeyDown", 78);
-        assert_eq!(key(&mut s, "filterKeyDown", 50)["return"], true);
-        let r = key(&mut s, "onKeyDown", 50);
-        assert_eq!(r["commitString"], "候选");
-        assert_eq!(r["compositionString"], "");
-    }
-
-    #[test]
-    fn 超出候选数的数字键不接管() {
-        let mut s = Session::default();
-        key(&mut s, "onKeyDown", 78);
-        assert_eq!(key(&mut s, "filterKeyDown", 57)["return"], false);
-    }
-
-    #[test]
-    fn 回车上屏拼音串() {
-        let mut s = Session::default();
-        key(&mut s, "onKeyDown", 78);
-        key(&mut s, "onKeyDown", 73);
-        let r = key(&mut s, "onKeyDown", VK_RETURN);
-        assert_eq!(r["commitString"], "ni");
-        assert_eq!(r["compositionString"], "");
-    }
-
-    #[test]
-    fn 下键移动高亮且不上屏() {
-        let mut s = Session::default();
-        key(&mut s, "onKeyDown", 78);
-        assert_eq!(key(&mut s, "filterKeyDown", VK_DOWN)["return"], true);
-        let r = key(&mut s, "onKeyDown", VK_DOWN);
-        assert_eq!(r["candidateCursor"], 1);
-        assert_eq!(r["compositionString"], "n");
-        assert!(r.get("commitString").is_none());
-    }
-
-    #[test]
-    fn 空格上屏当前高亮候选() {
-        let mut s = Session::default();
-        key(&mut s, "onKeyDown", 78);
-        key(&mut s, "onKeyDown", VK_DOWN);
-        assert_eq!(key(&mut s, "onKeyDown", VK_SPACE)["commitString"], "候选");
-    }
-
-    #[test]
-    fn 上键不越界且输入后高亮归零() {
-        let mut s = Session::default();
-        key(&mut s, "onKeyDown", 78);
-        assert_eq!(key(&mut s, "onKeyDown", VK_UP)["candidateCursor"], 0);
-        key(&mut s, "onKeyDown", VK_DOWN);
-        assert_eq!(key(&mut s, "onKeyDown", 73)["candidateCursor"], 0);
-    }
-
-    #[test]
-    fn 候选横排每行五个() {
-        let mut s = Session::default();
-        let r = key(&mut s, "onKeyDown", 78);
-        assert_eq!(r["customizeUI"]["candPerRow"], 5);
-    }
-
-    #[test]
-    fn 无拼音串时方向键不接管() {
-        let mut s = Session::default();
-        assert_eq!(key(&mut s, "filterKeyDown", VK_DOWN)["return"], false);
-    }
-
-    #[test]
-    fn 退格删一个字符() {
-        let mut s = Session::default();
-        key(&mut s, "onKeyDown", 78);
-        key(&mut s, "onKeyDown", 73);
-        assert_eq!(key(&mut s, "onKeyDown", VK_BACK)["compositionString"], "n");
-    }
-}
+mod tests;

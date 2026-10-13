@@ -27,6 +27,7 @@ Section "安装"
   ExecWait '"$INSTDIR\PIMELauncher.exe" /quit'
   SetOutPath "$INSTDIR\pyime"
   File "server.exe"
+  File "pyime.dict"
   SetOutPath "$INSTDIR\pyime\input_methods\pyime"
   File "input_methods\pyime\ime.json"
   nsExec::ExecToLog '"$INSTDIR\pyime\server.exe" --register "$INSTDIR"'
