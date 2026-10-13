@@ -1,3 +1,4 @@
+mod log;
 mod protocol;
 mod register;
 mod session;
@@ -30,9 +31,11 @@ fn main() {
     let stdin = io::stdin();
     let mut stdout = io::stdout().lock();
     let mut sessions: HashMap<String, session::Session> = HashMap::new();
+    let mut log = log::Log::open();
 
     for line in stdin.lock().lines() {
         let Ok(line) = line else { break };
+        log.line(&format!("> {line}"));
         let Some((id, req)) = protocol::parse_request(&line) else {
             eprintln!("忽略无法解析的请求: {line}");
             continue;
@@ -43,7 +46,9 @@ fn main() {
             continue;
         }
         let resp = sessions.entry(id.to_string()).or_default().handle(&req);
-        let _ = writeln!(stdout, "{}", protocol::format_response(id, &resp));
+        let out = protocol::format_response(id, &resp);
+        log.line(&format!("< {out}"));
+        let _ = writeln!(stdout, "{out}");
         let _ = stdout.flush();
     }
 }

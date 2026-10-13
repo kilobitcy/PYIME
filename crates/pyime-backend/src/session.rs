@@ -7,6 +7,15 @@ const VK_ESCAPE: i64 = 27;
 const VK_SPACE: i64 = 32;
 const CANDIDATES: [&str; 3] = ["测试", "候选", "拼音"];
 
+/// 数字键 1-9(主键盘或小键盘)对应的候选下标。
+fn digit_index(key: i64) -> Option<usize> {
+    match key {
+        49..=57 => Some((key - 49) as usize),
+        97..=105 => Some((key - 97) as usize),
+        _ => None,
+    }
+}
+
 #[derive(Default)]
 pub struct Session {
     composition: String,
@@ -16,7 +25,8 @@ impl Session {
     /// 该键是否由输入法接管(有拼音串时,空格/回车/Esc/退格也接管)。
     fn wants_key(&self, key: i64) -> bool {
         let letter = (65..=90).contains(&key);
-        let editing = matches!(key, VK_BACK | VK_RETURN | VK_ESCAPE | VK_SPACE);
+        let editing = matches!(key, VK_BACK | VK_RETURN | VK_ESCAPE | VK_SPACE)
+            || digit_index(key).is_some_and(|i| i < CANDIDATES.len());
         letter || (editing && !self.composition.is_empty())
     }
 
@@ -49,6 +59,10 @@ impl Session {
                 self.composition.clear();
             }
             VK_ESCAPE => self.composition.clear(),
+            _ if digit_index(key).is_some() => {
+                resp["commitString"] = json!(CANDIDATES[digit_index(key).unwrap()]);
+                self.composition.clear();
+            }
             VK_BACK => {
                 self.composition.pop();
             }
@@ -95,6 +109,33 @@ mod tests {
         assert_eq!(r["commitString"], "测试");
         assert_eq!(r["compositionString"], "");
         assert_eq!(r["showCandidates"], false);
+    }
+
+    #[test]
+    fn 数字键选择对应候选上屏() {
+        let mut s = Session::default();
+        key(&mut s, "onKeyDown", 78);
+        assert_eq!(key(&mut s, "filterKeyDown", 50)["return"], true);
+        let r = key(&mut s, "onKeyDown", 50);
+        assert_eq!(r["commitString"], "候选");
+        assert_eq!(r["compositionString"], "");
+    }
+
+    #[test]
+    fn 超出候选数的数字键不接管() {
+        let mut s = Session::default();
+        key(&mut s, "onKeyDown", 78);
+        assert_eq!(key(&mut s, "filterKeyDown", 57)["return"], false);
+    }
+
+    #[test]
+    fn 回车上屏拼音串() {
+        let mut s = Session::default();
+        key(&mut s, "onKeyDown", 78);
+        key(&mut s, "onKeyDown", 73);
+        let r = key(&mut s, "onKeyDown", VK_RETURN);
+        assert_eq!(r["commitString"], "ni");
+        assert_eq!(r["compositionString"], "");
     }
 
     #[test]
