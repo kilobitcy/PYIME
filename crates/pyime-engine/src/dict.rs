@@ -105,6 +105,11 @@ impl Dict {
         self.index.get(key).map(|v| self.read(v)).unwrap_or_default()
     }
 
+    /// 是否存在以 `prefix` 开头的键(不读取词条,用于剪枝)。
+    pub fn has_prefix(&self, prefix: &str) -> bool {
+        self.index.search(Str::new(prefix).starts_with()).into_stream().next().is_some()
+    }
+
     /// 以 `prefix` 开头的键(按字典序),最多 `limit` 个。
     pub fn prefix(&self, prefix: &str, limit: usize) -> Vec<(String, Vec<Entry>)> {
         let mut stream = self.index.search(Str::new(prefix).starts_with()).into_stream();
