@@ -2,6 +2,7 @@
 use crate::dict::Dict;
 use crate::fuzzy::{variants, FuzzyConfig};
 use crate::pinyin::syllables_at;
+use crate::user::UserModel;
 
 /// 每次模糊替换的惩罚(自然对数域,约等于词频缩小 e^4 ≈ 55 倍)。
 pub const FUZZY_PENALTY: f64 = 4.0;
@@ -35,11 +36,25 @@ struct Word {
 pub struct Engine {
     dict: Dict,
     cfg: FuzzyConfig,
+    user: UserModel,
 }
 
 impl Engine {
     pub fn new(dict: Dict, cfg: FuzzyConfig) -> Engine {
-        Engine { dict, cfg }
+        Engine { dict, cfg, user: UserModel::default() }
+    }
+
+    pub fn set_user(&mut self, user: UserModel) {
+        self.user = user;
+    }
+
+    pub fn user(&self) -> &UserModel {
+        &self.user
+    }
+
+    /// 用户上屏了 `text`(对应键入的 `typed`),记下以便下次提权。
+    pub fn learn(&mut self, typed: &str, text: &str) {
+        self.user.learn(typed, text);
     }
 
     /// 收集从 `pos` 出发的所有词(沿切分格深搜,词典前缀不存在即剪枝)。
@@ -53,7 +68,8 @@ impl Engine {
                 }
                 let f = fuzzy + c;
                 for e in self.dict.get(&next).into_iter().take(PER_KEY) {
-                    let score = (f64::from(e.weight.max(1))).ln() - FUZZY_PENALTY * f64::from(f);
+                    let bonus = self.user.bonus(&input[start..end], &e.word);
+                    let score = f64::from(e.weight.max(1)).ln() - FUZZY_PENALTY * f64::from(f) + bonus;
                     out.push(Word { start, end, text: e.word, score, fuzzy: f });
                 }
                 if depth + 1 < MAX_SYLLABLES {
@@ -191,6 +207,15 @@ mod tests {
     fn 整段有词时不拼整句() {
         let e = engine(&[("shi shi", "事实", 100), ("shi", "是", 1_000_000)]);
         assert_eq!(texts(&e, "shishi")[0], "事实");
+    }
+
+    #[test]
+    fn 选过的模糊词下次排第一() {
+        let mut e = engine(&[("zhong guo", "中国", 500_000), ("zong guo", "总过", 800_000)]);
+        assert_eq!(texts(&e, "zongguo")[0], "总过");
+        e.learn("zongguo", "中国");
+        assert_eq!(texts(&e, "zongguo")[0], "中国");
+        assert_eq!(texts(&e, "zhongguo")[0], "中国");
     }
 
     #[test]
