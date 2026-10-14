@@ -1,5 +1,4 @@
 //! 本机日志:追加到 `%LOCALAPPDATA%\PYIME\tsf.log`。任何失败静默忽略,不得影响宿主。
-#![allow(dead_code)]
 
 use std::fs::{self, OpenOptions};
 use std::io::Write;

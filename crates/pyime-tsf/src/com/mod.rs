@@ -2,6 +2,7 @@
 
 mod factory;
 mod composition;
+mod keys;
 mod launch;
 mod log;
 mod pipe;

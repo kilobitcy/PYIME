@@ -1,5 +1,4 @@
 //! 组字串与上屏:把 `Action` 通过一次同步 edit session 应用到文档。
-#![allow(dead_code)]
 
 use std::cell::RefCell;
 use std::rc::Rc;

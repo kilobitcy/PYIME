@@ -1,5 +1,4 @@
 //! 拉起 `pyime-server.exe`(与本 DLL 同目录),带限流。
-#![allow(dead_code)]
 
 use std::os::windows::process::CommandExt;
 use std::path::PathBuf;

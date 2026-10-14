@@ -1,5 +1,4 @@
 //! 到 pyime-server 的 overlapped 命名管道客户端:读写共用 150 ms 总截止时间,绝不无限阻塞宿主。
-#![allow(dead_code)]
 
 use std::io;
 use std::sync::atomic::{AtomicU32, Ordering};
