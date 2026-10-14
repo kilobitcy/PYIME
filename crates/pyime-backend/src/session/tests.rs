@@ -41,8 +41,10 @@ fn 字母键被接管并出候选() {
     let r = press(&mut s, &[N, I]);
     assert_eq!(r["compositionString"], "ni");
     assert_eq!(r["seqNum"], 7);
-    assert_eq!(r["candidateList"], json!(["你", "泥", "尼", "拟", "逆"]));
-    assert_eq!(r["customizeUI"]["candPerRow"], 5);
+    assert_eq!(r["candidateList"], json!(["你", "泥", "尼", "拟", "逆", "腻"]));
+    assert_eq!(r["customizeUI"]["candPerRow"], 6);
+    assert_eq!(r["customizeUI"]["candFontName"], "Microsoft YaHei UI");
+    assert_eq!(r["customizeUI"]["candFontSize"], 16);
 }
 
 #[test]
@@ -74,7 +76,7 @@ fn 数字键选择当前页对应候选() {
 fn 超出本页候选数的数字键不接管() {
     let mut s = session();
     press(&mut s, &[N, I]);
-    assert_eq!(key(&mut s, "filterKeyDown", 54)["return"], false); // 本页只有 5 个,6 不接管
+    assert_eq!(key(&mut s, "filterKeyDown", 55)["return"], false); // 本页只有 6 个,7 不接管
 }
 
 #[test]
@@ -89,8 +91,8 @@ fn 翻页键换页且数字选的是新页() {
     let mut s = session();
     press(&mut s, &[N, I]);
     let r = key(&mut s, "onKeyDown", VK_EQUALS);
-    assert_eq!(r["candidateList"], json!(["腻", "匿", "溺"]));
-    assert_eq!(key(&mut s, "onKeyDown", 49)["commitString"], "腻");
+    assert_eq!(r["candidateList"], json!(["匿", "溺"]));
+    assert_eq!(key(&mut s, "onKeyDown", 49)["commitString"], "匿");
 }
 
 #[test]
@@ -103,9 +105,9 @@ fn 减号和方括号往前翻页() {
 #[test]
 fn 下键越过页尾进入下一页() {
     let mut s = session();
-    press(&mut s, &[N, I, VK_DOWN, VK_DOWN, VK_DOWN, VK_DOWN]);
+    press(&mut s, &[N, I, VK_DOWN, VK_DOWN, VK_DOWN, VK_DOWN, VK_DOWN]);
     let r = key(&mut s, "onKeyDown", VK_DOWN);
-    assert_eq!((r["candidateList"][0].as_str(), r["candidateCursor"].as_i64()), (Some("腻"), Some(0)));
+    assert_eq!((r["candidateList"][0].as_str(), r["candidateCursor"].as_i64()), (Some("匿"), Some(0)));
 }
 
 #[test]
@@ -350,4 +352,35 @@ fn 自己注入的方向键回声不清状态() {
     pk(&mut s, 188, true);
     key(&mut s, "filterKeyDown", 37); // 注入的左键经输入法回来
     assert_eq!(commit(&pk(&mut s, 190, true)), "");
+}
+
+#[test]
+fn 组字串按高亮候选的切分加音节分隔符() {
+    let mut b = DictBuilder::default();
+    b.add("xian", "先", 500);
+    b.add("xi an", "西安", 900);
+    b.add("de", "得", 5000);
+    b.add("dao", "道", 5000);
+    let engine = Engine::new(Dict::from_bytes(b.build().unwrap()).unwrap(), FuzzyConfig::default());
+    let mut s = Session::new(Ime::with_engine(engine));
+    let r = press(&mut s, &[88, I, A, N]); // xian
+    let list: Vec<String> = r["candidateList"].as_array().unwrap().iter().map(|c| c.as_str().unwrap().to_string()).collect();
+    let a = list.iter().position(|c| c == "西安").unwrap();
+    let f = list.iter().position(|c| c == "先").unwrap();
+    s.cursor = a;
+    assert_eq!(s.display_input(), "xi'an");
+    s.cursor = f;
+    assert_eq!(s.display_input(), "xian");
+}
+
+#[test]
+fn 整句分隔符和没打完的尾部() {
+    let mut b = DictBuilder::default();
+    for (k, w) in [("de", "得"), ("dao", "道"), ("zhe", "者")] {
+        b.add(k, w, 5000);
+    }
+    let engine = Engine::new(Dict::from_bytes(b.build().unwrap()).unwrap(), FuzzyConfig::default());
+    let mut s = Session::new(Ime::with_engine(engine));
+    let r = press(&mut s, &[68, 69, 68, 65, 79, 90, 72, 69]); // dedaozhe
+    assert_eq!(r["compositionString"], "de'dao'zhe");
 }

@@ -40,6 +40,9 @@ pub struct Candidate {
     pub fuzzy: u8,
     /// 用到的模糊规则位掩码(声母 0–4,韵母 5–9),供选中后学习个人偏好。
     pub pairs: u16,
+    /// 消耗的输入里音节边界的字节位置(不含 0 与 `consumed`),供组字串显示 `de'dao`。
+    /// 词典外的用户短语没有切分,为空。
+    pub cuts: Vec<usize>,
 }
 
 #[derive(Debug, Clone)]
@@ -50,6 +53,8 @@ struct Word {
     score: f64,
     fuzzy: u8,
     pairs: u16,
+    /// 词内部音节边界的字节位置(不含起止)。
+    cuts: Vec<usize>,
     /// 末尾残缺音节凑出来的词,不算"精确"。
     partial: bool,
 }
@@ -141,7 +146,7 @@ impl Engine {
     }
 
     /// 末尾没打完的字母按音节开头匹配,词在输入末尾结束。
-    fn grow_partial(&self, input: &str, start: usize, pos: usize, key: &str, acc: Acc, out: &mut Vec<Word>) {
+    fn grow_partial(&self, input: &str, start: usize, pos: usize, key: &str, acc: Acc, cuts: &[usize], out: &mut Vec<Word>) {
         if pos >= input.len() {
             return;
         }
@@ -157,14 +162,14 @@ impl Engine {
             for e in self.top_entries(&next) {
                 let bonus = self.user.bonus(&input[start..], &e.word);
                 let score = f64::from(e.weight.max(1)).ln() - self.fuzzy_penalty * f64::from(a.fuzzy) + a.discount - PARTIAL_PENALTY + bonus - if key.is_empty() { SINGLE_CHAR_DISCOUNT } else { 0.0 };
-                out.push(Word { start, end: input.len(), text: e.word, score, fuzzy: a.fuzzy, pairs: a.pairs, partial: true });
+                out.push(Word { start, end: input.len(), text: e.word, score, fuzzy: a.fuzzy, pairs: a.pairs, cuts: cuts.to_vec(), partial: true });
             }
         }
     }
 
     /// 收集从 `pos` 出发的所有词(沿切分格深搜,词典前缀不存在即剪枝)。
-    fn grow(&self, input: &str, start: usize, pos: usize, key: &str, acc: Acc, depth: usize, out: &mut Vec<Word>) {
-        self.grow_partial(input, start, pos, key, acc, out);
+    fn grow(&self, input: &str, start: usize, pos: usize, key: &str, acc: Acc, depth: usize, cuts: &mut Vec<usize>, out: &mut Vec<Word>) {
+        self.grow_partial(input, start, pos, key, acc, cuts, out);
         for syl in syllables_at(input, pos) {
             let end = pos + syl.len();
             for (v, c, m) in variants(syl, &self.cfg) {
@@ -176,10 +181,12 @@ impl Engine {
                 for e in self.top_entries(&next) {
                     let bonus = self.user.bonus(&input[start..end], &e.word);
                     let score = f64::from(e.weight.max(1)).ln() - self.fuzzy_penalty * f64::from(a.fuzzy) + a.discount + bonus - if depth == 0 { SINGLE_CHAR_DISCOUNT } else { 0.0 };
-                    out.push(Word { start, end, text: e.word, score, fuzzy: a.fuzzy, pairs: a.pairs, partial: false });
+                    out.push(Word { start, end, text: e.word, score, fuzzy: a.fuzzy, pairs: a.pairs, cuts: cuts.clone(), partial: false });
                 }
                 if depth + 1 < MAX_SYLLABLES {
-                    self.grow(input, start, end, &next, a, depth + 1, out);
+                    cuts.push(end);
+                    self.grow(input, start, end, &next, a, depth + 1, cuts, out);
+                    cuts.pop();
                 }
             }
         }
@@ -202,11 +209,11 @@ impl Engine {
             for s in syllables_at(input, a) {
                 reach[a + s.len()] = true;
             }
-            self.grow(input, a, a, "", Acc::default(), 0, &mut words);
+            self.grow(input, a, a, "", Acc::default(), 0, &mut Vec::new(), &mut words);
         }
         for (typed, text, bonus) in self.user.matching(input) {
             if !words.iter().any(|w| w.start == 0 && w.end == typed.len() && w.text == text) {
-                words.push(Word { start: 0, end: typed.len(), text: text.to_string(), score: USER_PHRASE_BASE + bonus, fuzzy: 0, pairs: 0, partial: false });
+                words.push(Word { start: 0, end: typed.len(), text: text.to_string(), score: USER_PHRASE_BASE + bonus, fuzzy: 0, pairs: 0, cuts: Vec::new(), partial: false });
             }
         }
         if !context.is_empty() {
@@ -226,7 +233,7 @@ impl Engine {
         let sents: Vec<Candidate> = scored.into_iter().map(|s| s.0).collect();
         let mut firsts: Vec<&Word> = words.iter().filter(|w| w.start == 0).collect();
         firsts.sort_by(|a, b| b.end.cmp(&a.end).then(b.score.total_cmp(&a.score)));
-        let as_cand = |w: &&Word| Candidate { text: w.text.clone(), consumed: w.end, fuzzy: w.fuzzy, pairs: w.pairs };
+        let as_cand = |w: &&Word| Candidate { text: w.text.clone(), consumed: w.end, fuzzy: w.fuzzy, pairs: w.pairs, cuts: w.cuts.clone() };
         let (whole, rest): (Vec<&Word>, Vec<&Word>) = firsts.into_iter().partition(|w| w.end == far);
         // 没有精确的整段词、整句完全精确且得分高于最佳整段词时,整句排最前;否则整句紧跟整段词
         let exact_whole = whole.iter().any(|w| w.fuzzy == 0);
@@ -277,19 +284,26 @@ fn sentences(words: &[Word], far: usize, bigram: &dyn Fn(&str, &str) -> f64) -> 
     let mut out: Vec<(Candidate, f64, bool)> = Vec::new();
     for r in 0..best[far].len() {
         let (mut pos, mut rank) = (far, r);
-        let (mut parts, mut fuzzy, mut pairs, mut partial) = (Vec::new(), 0u8, 0u16, false);
+        let (mut parts, mut fuzzy, mut pairs, mut partial, mut cuts) = (Vec::new(), 0u8, 0u16, false, Vec::new());
         while pos > 0 {
             let (_, wi, prev_rank, _, _) = &best[pos][rank];
             let w = &words[*wi];
             parts.push(w.text.as_str());
             fuzzy = fuzzy.saturating_add(w.fuzzy);
             pairs |= w.pairs;
+            cuts.extend(w.cuts.iter().copied());
+            if w.start > 0 {
+                cuts.push(w.start);
+            }
             partial |= w.partial;
             (pos, rank) = (w.start, *prev_rank);
         }
         let text: String = parts.iter().rev().copied().collect();
         if parts.len() >= 2 && out.len() < BEAM && !out.iter().any(|c| c.0.text == text) {
-            out.push((Candidate { text, consumed: far, fuzzy, pairs }, best[far][r].0, fuzzy == 0 && !partial));
+            out.push(({
+                cuts.sort_unstable();
+                Candidate { text, consumed: far, fuzzy, pairs, cuts }
+            }, best[far][r].0, fuzzy == 0 && !partial));
         }
     }
     // 三档:精确 / 仅模糊 / 含残缺音节;各档按得分,取 3+2+1 条,免得被前一档的噪声挤掉
@@ -456,5 +470,23 @@ mod tests {
         assert_eq!(e.candidates_after("shi", "上海")[0].text, "市");
         assert_eq!(e.candidates_after("shi", "我")[0].text, "是");
         assert_eq!(e.candidates("shi")[0].text, "是");
+    }
+
+    #[test]
+    fn 候选带音节边界() {
+        let e = engine(&[("xian", "先", 500), ("xi an", "西安", 500), ("wo", "我", 5000), ("ai", "爱", 5000), ("ni", "你", 5000)]);
+        let c = e.candidates("xian");
+        assert_eq!(c.iter().find(|c| c.text == "先").unwrap().cuts, Vec::<usize>::new());
+        assert_eq!(c.iter().find(|c| c.text == "西安").unwrap().cuts, [2]);
+        let s = e.candidates("woaini");
+        assert_eq!((s[0].text.as_str(), s[0].cuts.as_slice()), ("我爱你", [2usize, 4].as_slice()));
+    }
+
+    #[test]
+    fn 残缺音节前的边界() {
+        let e = engine(&[("ni hao", "你好", 5000), ("ni", "你", 5000)]);
+        let c = e.candidates("nih");
+        let w = c.iter().find(|c| c.text == "你好").unwrap();
+        assert_eq!((w.consumed, w.cuts.as_slice()), (3, [2usize].as_slice()));
     }
 }

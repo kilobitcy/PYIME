@@ -24,7 +24,10 @@ const VK_RIGHT: i64 = 39;
 /// 模拟按键发出后这段时间内,收到的同一方向键视为自己注入的回声,不改变状态。
 const INJECT_ECHO: Duration = Duration::from_millis(300);
 /// 候选横排,每页个数(与微信输入法一致)。
-const PAGE_SIZE: usize = 5;
+const PAGE_SIZE: usize = 6;
+/// 候选窗字体与字号(PIME 只允许改这两项外观)。
+const CAND_FONT: &str = "Microsoft YaHei UI";
+const CAND_FONT_SIZE: i64 = 16;
 
 /// 数字键 1-9(主键盘或小键盘)对应的页内下标。
 fn digit_index(key: i64) -> Option<usize> {
@@ -210,6 +213,23 @@ impl Session {
         self.last = Some(Last { learned: std::mem::take(&mut self.learned), typed, text: text.to_string(), backspaced: false });
     }
 
+    /// 组字串里未转换的拼音:按当前高亮候选的切分加 `'`(`de'dao'zhe`),没有候选时原样。
+    fn display_input(&self) -> String {
+        let Some(c) = self.page_items().get(self.cursor) else { return self.input.clone() };
+        let mut cuts = c.cuts.clone();
+        if c.consumed < self.input.len() {
+            cuts.push(c.consumed);
+        }
+        let mut out = String::new();
+        for (i, ch) in self.input.char_indices() {
+            if i > 0 && cuts.contains(&i) {
+                out.push('\'');
+            }
+            out.push(ch);
+        }
+        out
+    }
+
     fn refresh(&mut self) {
         self.cands = if self.input.is_empty() { Vec::new() } else { self.ime.candidates(&self.input, &self.prev()) };
         self.page = 0;
@@ -376,7 +396,7 @@ impl Session {
         if let Some(text) = commit.filter(|t| !t.is_empty()) {
             resp["commitString"] = json!(text);
         }
-        let shown = format!("{}{}", self.pending, self.input);
+        let shown = format!("{}{}", self.pending, self.display_input());
         resp["compositionString"] = json!(shown);
         resp["compositionCursor"] = json!(shown.chars().count());
         resp["showCandidates"] = json!(!self.cands.is_empty());
@@ -384,7 +404,7 @@ impl Session {
             let texts: Vec<&str> = self.page_items().iter().map(|c| c.text.as_str()).collect();
             resp["candidateList"] = json!(texts);
             resp["candidateCursor"] = json!(self.cursor);
-            resp["customizeUI"] = json!({ "candUseCursor": true, "candPerRow": PAGE_SIZE });
+            resp["customizeUI"] = json!({ "candUseCursor": true, "candPerRow": PAGE_SIZE, "candFontName": CAND_FONT, "candFontSize": CAND_FONT_SIZE });
         }
     }
 }
