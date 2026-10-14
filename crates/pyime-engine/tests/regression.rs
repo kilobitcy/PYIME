@@ -35,6 +35,7 @@ const CASES: &[(&str, &str, usize)] = &[
     ("woyaoshuijiao", "我要睡觉", 1),
     ("jintianxingqijia", "今天星期几", 1),
     ("zhuijia", "追加", 1),
+    ("qinjixu", "请继续", 1),   // in=ing:精确的 亲继续 不应压过模糊的高频整句
     ("zaizhuijia", "再追加", 2), // 用户期望第 1:需 bigram 或学习一次
 ];
 
@@ -48,6 +49,9 @@ fn 回归用例() {
     }
     if let Ok(w) = std::env::var("PYIME_GRAM_WEIGHT") {
         engine.set_gram_weight(w.parse().unwrap());
+    }
+    if let Ok(p) = std::env::var("PYIME_FUZZY_PENALTY") {
+        engine.set_fuzzy_penalty(p.parse().unwrap());
     }
     if let Ok(w) = std::env::var("PYIME_GRAM_T") {
         engine.set_gram_threshold(w.parse().unwrap());

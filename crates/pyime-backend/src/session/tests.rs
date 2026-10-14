@@ -245,3 +245,109 @@ fn 退格后又按了别的键_不再视为撤销() {
     press(&mut s, &[50]);
     assert!(s.ime.user_export().contains("ni\t你\t1"));
 }
+
+fn pk(s: &mut Session, code: i64, shift: bool) -> Value {
+    let mut ks = vec![0; 256];
+    ks[16] = if shift { 0x80 } else { 0 };
+    s.handle(&json!({"method": "onKeyDown", "seqNum": 1, "keyCode": code, "keyStates": ks}))
+}
+
+fn commit(v: &Value) -> &str {
+    v["commitString"].as_str().unwrap_or("")
+}
+
+#[test]
+fn 中文状态标点转全角() {
+    let mut s = session();
+    assert_eq!(commit(&pk(&mut s, 220, false)), "\u{3001}"); // \ → 、
+    assert_eq!(commit(&pk(&mut s, 190, false)), "\u{3002}"); // . → 。
+    assert_eq!(commit(&pk(&mut s, 188, false)), "\u{FF0C}");
+    assert_eq!(commit(&pk(&mut s, 192, false)), "\u{00B7}"); // ` → ·
+    assert_eq!(commit(&pk(&mut s, 52, true)), "\u{FFE5}"); // $ → ￥
+    assert_eq!(commit(&pk(&mut s, 191, true)), "\u{FF1F}"); // ?
+}
+
+#[test]
+fn 斜杠和英文状态保持原样() {
+    let mut s = session();
+    assert_eq!(key(&mut s, "filterKeyDown", 191)["return"], false);
+    key(&mut s, "filterKeyDown", 16);
+    key(&mut s, "filterKeyUp", 16); // 单击 Shift 切英文
+    assert_eq!(key(&mut s, "filterKeyDown", 190)["return"], false);
+    assert_eq!(key(&mut s, "filterKeyDown", 220)["return"], false);
+}
+
+#[test]
+fn 组字时按标点先上屏高亮候选() {
+    let mut s = session();
+    press(&mut s, &[N, I]);
+    assert_eq!(commit(&pk(&mut s, 188, false)), "你\u{FF0C}");
+    assert!(!s.composing());
+}
+
+#[test]
+fn 数字后的句点逗号冒号用半角() {
+    let mut s = session();
+    key(&mut s, "filterKeyDown", 49); // 数字 1 放行给应用
+    assert_eq!(commit(&pk(&mut s, 190, false)), ".");
+    assert_eq!(commit(&pk(&mut s, 190, false)), "\u{3002}"); // 紧接的第二个句点不再在数字后
+    key(&mut s, "filterKeyDown", 50);
+    assert_eq!(commit(&pk(&mut s, 186, true)), ":");
+}
+
+#[test]
+fn 引号开闭交替() {
+    let mut s = session();
+    assert_eq!(commit(&pk(&mut s, 222, true)), "\u{201C}");
+    assert_eq!(commit(&pk(&mut s, 222, true)), "\u{201D}");
+    assert_eq!(commit(&pk(&mut s, 222, false)), "\u{2018}");
+}
+
+#[test]
+fn 成对符号输出一对并回退光标_右符号跳过() {
+    let mut s = session();
+    assert_eq!(commit(&pk(&mut s, 188, true)), "\u{300A}\u{300B}"); // < → 《》
+    assert_eq!(s.ime.take_pressed(), [37]);
+    press(&mut s, &[N, I]);
+    press(&mut s, &[32]); // 在书名号里输入 你
+    assert_eq!(commit(&pk(&mut s, 190, true)), ""); // > 跳过自动补全的 》
+    assert_eq!(s.ime.take_pressed(), [39]);
+    assert_eq!(commit(&pk(&mut s, 190, true)), "\u{300B}"); // 再按才真输出
+}
+
+#[test]
+fn 括号对应关系() {
+    let mut s = session();
+    assert_eq!(commit(&pk(&mut s, 57, true)), "\u{FF08}\u{FF09}"); // ( → （）
+    assert_eq!(commit(&pk(&mut s, 219, true)), "\u{3010}\u{3011}"); // { → 【】
+    assert_eq!(commit(&pk(&mut s, 219, false)), "\u{300C}\u{300D}"); // [ → 「」
+}
+
+#[test]
+fn 方括号在组字时仍是翻页键() {
+    let mut s = session();
+    press(&mut s, &[N, I]);
+    let r = pk(&mut s, 221, false);
+    assert_eq!(commit(&r), "");
+    assert!(s.composing());
+    assert!(s.ime.take_pressed().is_empty());
+}
+
+#[test]
+fn 用户移动光标后右符号不再跳过() {
+    let mut s = session();
+    pk(&mut s, 188, true);
+    s.inject_echo = Duration::ZERO;
+    key(&mut s, "filterKeyDown", 37); // 用户自己按了左方向键
+    s.ime.take_pressed();
+    assert_eq!(commit(&pk(&mut s, 190, true)), "\u{300B}");
+    assert!(s.ime.take_pressed().is_empty());
+}
+
+#[test]
+fn 自己注入的方向键回声不清状态() {
+    let mut s = session();
+    pk(&mut s, 188, true);
+    key(&mut s, "filterKeyDown", 37); // 注入的左键经输入法回来
+    assert_eq!(commit(&pk(&mut s, 190, true)), "");
+}

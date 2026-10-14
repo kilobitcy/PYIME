@@ -2,7 +2,9 @@
 use crate::ime::Ime;
 use pyime_engine::engine::Candidate;
 use serde_json::{json, Value};
+use crate::punct::{self, Mapped};
 use std::rc::Rc;
+use std::time::{Duration, Instant};
 
 const VK_SHIFT_KEYS: [i64; 3] = [16, 160, 161];
 const VK_BACK: i64 = 8;
@@ -17,6 +19,10 @@ const VK_EQUALS: i64 = 187;
 const VK_MINUS: i64 = 189;
 const VK_LBRACKET: i64 = 219;
 const VK_RBRACKET: i64 = 221;
+const VK_LEFT: i64 = 37;
+const VK_RIGHT: i64 = 39;
+/// 模拟按键发出后这段时间内,收到的同一方向键视为自己注入的回声,不改变状态。
+const INJECT_ECHO: Duration = Duration::from_millis(300);
 /// 候选横排,每页个数(与微信输入法一致)。
 const PAGE_SIZE: usize = 5;
 
@@ -69,11 +75,20 @@ pub struct Session {
     /// 本次组词已做的学习。
     learned: Vec<Learned>,
     last: Option<Last>,
+    /// 应用刚收到数字键,紧接着的 `.` `,` `:` 用半角。
+    after_digit: bool,
+    /// 双引号 / 单引号当前是否已开(下一次输出闭引号)。
+    quote_open: [bool; 2],
+    /// 自动补全、光标前方尚未越过的右符号(栈)。
+    closers: Vec<char>,
+    /// 最近一次自己注入方向键的时刻。
+    injected: Option<Instant>,
+    inject_echo: Duration,
 }
 
 impl Session {
     pub fn new(ime: Rc<Ime>) -> Session {
-        Session { ime, pending: String::new(), input: String::new(), cands: Vec::new(), typed_all: String::new(), context: String::new(), segments: 0, page: 0, cursor: 0, english: false, shift_pending: false, learned: Vec::new(), last: None }
+        Session { ime, pending: String::new(), input: String::new(), cands: Vec::new(), typed_all: String::new(), context: String::new(), segments: 0, page: 0, cursor: 0, english: false, shift_pending: false, learned: Vec::new(), last: None, after_digit: false, quote_open: [false; 2], closers: Vec::new(), injected: None, inject_echo: INJECT_ECHO }
     }
 
     fn composing(&self) -> bool {
@@ -121,13 +136,14 @@ impl Session {
         match req["method"].as_str().unwrap_or("") {
             m @ ("filterKeyDown" | "onKeyDown") => {
                 self.shift_pending = is_shift;
-                let wants = self.wants_key(key, shift_down);
+                let mapped = self.punct_for(req, key);
+                let wants = mapped.is_some() || self.wants_key(key, shift_down);
                 if !wants {
-                    self.note_passthrough(key);
+                    self.note_passthrough(key, shift_down);
                 }
                 resp["return"] = json!(wants);
                 if wants && m == "onKeyDown" {
-                    self.on_key_down(key, &mut resp);
+                    self.on_key_down(key, mapped, &mut resp);
                 }
             }
             "filterKeyUp" | "onKeyUp" => {
@@ -160,7 +176,18 @@ impl Session {
 
     /// 应用收到的按键(输入法未接管)对"刚上屏"状态的影响:退格记为可能在撤销,
     /// Shift/Ctrl/Alt 与字母不影响,其他键说明用户接受了上屏结果。
-    fn note_passthrough(&mut self, key: i64) {
+    fn note_passthrough(&mut self, key: i64, shift_down: bool) {
+        if matches!(key, VK_LEFT | VK_RIGHT) && self.injected.is_some_and(|t| t.elapsed() < self.inject_echo) {
+            return;
+        }
+        let modifier = VK_SHIFT_KEYS.contains(&key) || matches!(key, 17 | 18 | 20);
+        if !modifier {
+            self.after_digit = !shift_down && matches!(key, 48..=57 | 96..=105);
+        }
+        // 光标被移动或内容被删除后,不再认为光标前方是自动补全的右符号
+        if matches!(key, VK_BACK | VK_RETURN | VK_ESCAPE | 9 | 33..=40 | 46) {
+            self.closers.clear();
+        }
         if key == VK_BACK {
             if let Some(l) = &mut self.last {
                 l.backspaced = true;
@@ -254,9 +281,74 @@ impl Session {
         text
     }
 
-    fn on_key_down(&mut self, key: i64, resp: &mut Value) {
+    /// 中文状态下该键若是要转换的标点,返回其映射。组字时翻页用的 `[` `]` `-` `=` 不转换。
+    fn punct_for(&self, req: &Value, key: i64) -> Option<Mapped> {
+        let down = |i: usize| req["keyStates"][i].as_u64().unwrap_or(0) & 0x80 != 0;
+        if self.english || down(17) || down(18) || (65..=90).contains(&key) {
+            return None;
+        }
+        if self.composing() && matches!(key, VK_MINUS | VK_EQUALS | VK_LBRACKET | VK_RBRACKET) {
+            return None;
+        }
+        punct::map(punct::typed_char(req)?)
+    }
+
+    /// 把当前组字整体上屏:逐段选高亮候选直到输入耗尽,没有候选则原样上屏拼音。
+    fn commit_all(&mut self) -> String {
+        if !self.composing() {
+            return String::new();
+        }
+        let mut idx = self.cursor;
+        for _ in 0..64 {
+            if self.cands.is_empty() {
+                break;
+            }
+            if let Some(t) = self.select(idx) {
+                return t;
+            }
+            idx = 0;
+        }
+        self.flush_raw()
+    }
+
+    fn inject(&mut self, vk: i64) {
+        self.ime.press(vk as u16);
+        self.injected = Some(Instant::now());
+    }
+
+    /// 输出标点(组字时先上屏高亮候选);成对符号注入方向键让光标回到中间或跳过右符号。
+    fn punctuate(&mut self, m: Mapped, was_digit: bool) -> Option<String> {
+        let mut out = self.commit_all();
+        self.last = None;
+        match m {
+            Mapped::Fixed(c) => out.push(c),
+            Mapped::Number { half, full } => out.push(if was_digit && out.is_empty() { half } else { full }),
+            Mapped::Quote(double) => {
+                let i = usize::from(!double);
+                let (open, close) = if double { ('\u{201C}', '\u{201D}') } else { ('\u{2018}', '\u{2019}') };
+                out.push(if self.quote_open[i] { close } else { open });
+                self.quote_open[i] = !self.quote_open[i];
+            }
+            Mapped::Open { open, close } => {
+                out.push(open);
+                out.push(close);
+                self.closers.push(close);
+                self.inject(VK_LEFT);
+            }
+            Mapped::Close(c) if self.closers.last() == Some(&c) => {
+                self.closers.pop();
+                self.inject(VK_RIGHT);
+            }
+            Mapped::Close(c) => out.push(c),
+        }
+        Some(out)
+    }
+
+    fn on_key_down(&mut self, key: i64, mapped: Option<Mapped>, resp: &mut Value) {
+        let was_digit = std::mem::take(&mut self.after_digit);
         let mut commit: Option<String> = None;
         match key {
+            _ if mapped.is_some() => commit = self.punctuate(mapped.unwrap(), was_digit),
             VK_SPACE if self.cands.is_empty() => commit = Some(self.flush_raw()),
             VK_SPACE => commit = self.select(self.cursor),
             VK_RETURN => commit = Some(self.flush_raw()),

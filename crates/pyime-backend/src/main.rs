@@ -1,6 +1,7 @@
 mod ime;
 mod inputlog;
 mod log;
+mod punct;
 mod protocol;
 mod register;
 mod session;

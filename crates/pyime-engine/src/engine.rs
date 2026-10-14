@@ -5,8 +5,8 @@ use crate::fuzzy::{partial, variants, FuzzyConfig};
 use crate::pinyin::{is_syllable, syllables_at};
 use crate::user::UserModel;
 
-/// 每次模糊替换的惩罚(自然对数域,约等于词频缩小 e^4 ≈ 55 倍)。
-pub const FUZZY_PENALTY: f64 = 4.0;
+/// 每次模糊替换的惩罚(自然对数域,约等于词频缩小 e^3 ≈ 20 倍)。
+pub const FUZZY_PENALTY: f64 = 3.0;
 /// 整句里每多一个词的代价,使"长词"优于"拆成单字"。
 /// 末尾残缺音节(只打了开头)的惩罚,使同长度时完整音节的词优先。
 const PARTIAL_PENALTY: f64 = 3.0;
@@ -333,7 +333,7 @@ mod tests {
 
     #[test]
     fn 模糊词频足够高时可以胜出() {
-        // 惩罚约 55 倍:高频模糊词压过极低频的精确词,但不会压过同量级的精确词
+        // 惩罚约 20 倍:高频模糊词压过极低频的精确词,但不会压过同量级的精确词
         let e = engine(&[("si", "死", 10), ("shi", "是", 100_000), ("shi", "时", 2_000)]);
         assert_eq!(texts(&e, "si")[0], "是");
         let e = engine(&[("si", "四", 5_000), ("shi", "是", 100_000)]);

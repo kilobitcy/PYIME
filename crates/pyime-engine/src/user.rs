@@ -6,8 +6,8 @@ use std::collections::HashMap;
 const PAIR_BASE: f64 = 8.0;
 const PAIR_SLOPE: f64 = 2.0;
 const WORD_BASE: f64 = 3.0;
-/// 模糊规则个人折扣的上限(自然对数域);默认惩罚 4.0,用得再多也至少剩 1.0。
-const FUZZY_DISCOUNT_CAP: f64 = 3.0;
+/// 模糊规则个人折扣的上限(自然对数域);默认惩罚 3.0,用得再多也至少剩 1.0。
+const FUZZY_DISCOUNT_CAP: f64 = 2.0;
 /// 个人搭配加分:系数与封顶(自然对数域)。上文只取末尾至多 3 个字。
 const COLLOCATION_SLOPE: f64 = 1.5;
 const COLLOCATION_CAP: f64 = 5.0;
