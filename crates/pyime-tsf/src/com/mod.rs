@@ -1,14 +1,18 @@
 //! COM 入口:模块句柄、引用计数、4 个 Dll* 导出与 DllMain。
 
+mod factory;
+mod service;
+
 use core::ffi::c_void;
 use std::sync::atomic::{AtomicIsize, AtomicPtr, Ordering};
 
 use windows::Win32::Foundation::{
     CLASS_E_CLASSNOTAVAILABLE, E_FAIL, HINSTANCE, HMODULE, S_FALSE, S_OK,
 };
+use windows::Win32::System::Com::IClassFactory;
 use windows::Win32::System::LibraryLoader::GetModuleFileNameW;
 use windows::Win32::System::SystemServices::DLL_PROCESS_ATTACH;
-use windows::core::{BOOL, GUID, HRESULT, HSTRING};
+use windows::core::{BOOL, GUID, HRESULT, HSTRING, Interface};
 use windows_registry::CLASSES_ROOT;
 
 pub(crate) const CLSID_PYIME: GUID = GUID::from_u128(0xafe649c4_87d0_4e83_8bb0_733256caeadb);
@@ -24,12 +28,10 @@ static DLL_REFERENCES: AtomicIsize = AtomicIsize::new(0);
 /// 本 DLL 的模块句柄,DllMain 加载时记下。
 static DLL_MODULE: AtomicPtr<c_void> = AtomicPtr::new(core::ptr::null_mut());
 
-#[allow(dead_code)] // 阶段 1 的类厂与 TextService 使用
 pub(crate) fn lock_module() {
     DLL_REFERENCES.fetch_add(1, Ordering::SeqCst);
 }
 
-#[allow(dead_code)]
 pub(crate) fn unlock_module() {
     DLL_REFERENCES.fetch_sub(1, Ordering::SeqCst);
 }
@@ -72,8 +74,11 @@ extern "system" fn DllGetClassObject(
     if rclsid.is_null() || riid.is_null() || ppv.is_null() {
         return E_FAIL;
     }
-    // 阶段 0 没有类厂;阶段 1 (Task 5) 在此返回 ClassFactory。
-    CLASS_E_CLASSNOTAVAILABLE
+    if unsafe { *rclsid } != CLSID_PYIME {
+        return CLASS_E_CLASSNOTAVAILABLE;
+    }
+    let factory: IClassFactory = factory::ClassFactory.into();
+    unsafe { factory.query(riid, ppv) }
 }
 
 #[no_mangle]
