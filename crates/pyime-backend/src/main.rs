@@ -1,10 +1,7 @@
-mod ime;
-mod inputlog;
-mod log;
-mod punct;
 mod protocol;
 mod register;
-mod session;
+
+use pyime_backend::{ime, inputlog, log, session};
 
 use std::collections::HashMap;
 use std::io::{self, BufRead, Write};
