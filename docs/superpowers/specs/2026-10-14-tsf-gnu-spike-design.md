@@ -46,3 +46,15 @@ Linux 兼容:Windows 专有依赖置于 `[target.'cfg(windows)'.dependencies]`;c
 
 ## 交付物
 本 spec;DLL 位于 `target/x86_64-pc-windows-gnu/release/`,不入库。
+
+## 结果(2026-10-14)
+**结论:通过。** mingw 交叉编译(`x86_64-pc-windows-gnu`)产出的 TSF DLL 可在 Win11 注册、被宿主加载并上屏,无需改用 MSVC。
+
+- 工具链:`windows` 0.62.2;`scripts/build-tsf.sh` 默认 `RUSTFLAGS="-C panic=abort -C target-feature=+crt-static"` 一次可用,未用到备选参数。
+- objdump 依赖(阶段 1 DLL):仅 kernel32、advapi32、ktmw32、oleaut32、ntdll、msvcrt、USERENV、WS2_32、bcryptprimitives、api-ms-win-core-* 等系统库,不含 libgcc/libwinpthread;4 个 `Dll*` 导出齐全。
+- 阶段 0(空壳):`regsvr32` 注册/反注册成功,`reg query` 显示 InprocServer32 路径与 ThreadingModel=Apartment(用户截图确认)。
+- 阶段 1(最小 TSF):用户在 Win11 实机按验收 1–4 逐项验证,均通过(语言列表出现"PYIME 实验"、记事本/浏览器/Windows Terminal 上屏"测试"、Ctrl 组合键不被吃、约 10 分钟无宿主崩溃、反注册清除注册项、PIME 与 PYIME v0.1.7 不受影响)。逐宿主的细节与崩溃日志用户未单独记录,以"全部 OK"为准。
+- 与计划的差异:`service.rs` 中 `ComObjectInterface` 改为 `IUnknownImpl`(`to_interface` 的来源);`check-tsf-dll.sh` 改用 here-string,避免 pipefail 下 `grep -q` 的 SIGPIPE 误报。
+- 未覆盖:clippy 未跑(本机未装);32 位 DLL、MSVC 构建、Win10、高 DPI/多显示器/全屏、UWP、uiAccess 均未测。
+
+**判定:** 进入后续里程碑——新建 `pyime-protocol`,搬青简 `tsf/`(保留版权头,同步 NOTICE),重写 `client/` 对接精简协议。
