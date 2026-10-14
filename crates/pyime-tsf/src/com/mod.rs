@@ -1,6 +1,9 @@
 //! COM 入口:模块句柄、引用计数、4 个 Dll* 导出与 DllMain。
 
 mod factory;
+mod launch;
+mod log;
+mod pipe;
 mod registry;
 mod service;
 
