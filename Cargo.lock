@@ -68,6 +68,7 @@ dependencies = [
 name = "pyime-tsf"
 version = "0.0.1"
 dependencies = [
+ "serde_json",
  "windows",
  "windows-core",
  "windows-registry",
