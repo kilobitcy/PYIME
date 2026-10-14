@@ -1,6 +1,7 @@
 //! COM 入口:模块句柄、引用计数、4 个 Dll* 导出与 DllMain。
 
 mod factory;
+mod registry;
 mod service;
 
 use core::ffi::c_void;
@@ -58,10 +59,11 @@ fn register() -> windows::core::Result<()> {
     let inproc = base.create("InprocServer32")?;
     inproc.set_string("", module.to_string())?;
     inproc.set_string("ThreadingModel", "Apartment")?;
-    Ok(())
+    registry::register_profile()
 }
 
 fn unregister() {
+    registry::unregister_profile();
     let _ = CLASSES_ROOT.remove_tree(clsid_key());
 }
 
