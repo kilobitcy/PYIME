@@ -27,7 +27,7 @@ pub(crate) const CLSID_PYIME_STR: &str = "{AFE649C4-87D0-4E83-8BB0-733256CAEADB}
 pub(crate) const GUID_PROFILE: GUID = GUID::from_u128(0x152b7a26_b14e_4e0a_9251_358fd482a5bc);
 /// zh-CN。
 pub(crate) const LANGID_ZH_CN: u16 = 0x0804;
-pub(crate) const SERVICE_DESCRIPTION: &str = "PYIME 实验";
+pub(crate) const SERVICE_DESCRIPTION: &str = "PYIME(自研预览)";
 
 /// 存活的 COM 对象 + LockServer 计数,DllCanUnloadNow 据它判断能否卸载。
 static DLL_REFERENCES: AtomicIsize = AtomicIsize::new(0);

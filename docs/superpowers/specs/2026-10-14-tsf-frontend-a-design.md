@@ -66,3 +66,6 @@ Windows 实机(用户操作):
 - 提权宿主(管理员窗口)受 UIPI 限制,`SendInput` 注入与管道连接均可能失败,与现有 PIME 方案同样的限制,不在 A 里解决。
 - 候选窗在高 DPI、多显示器、全屏程序下的定位待实机验证。
 - 多用户/RDP 场景依赖管道名带用户 SID,未专门测试。
+
+## A3 部署
+开发期把 `pyime_tsf.dll`(`scripts/build-tsf.sh` 产出)、`pyime-server.exe`、`pyime.dict` 放进同一目录 `C:\PYIME\`;管理员终端 `regsvr32 C:\PYIME\pyime_tsf.dll` 注册,语言列表里添加"PYIME(自研预览)"。DLL 按自身目录找 `pyime-server.exe` 并在管道不可用时自动拉起(每进程至多每 2 秒一次)。若装过 spike 版,先 `regsvr32 /u` 旧 DLL。日志:`%LOCALAPPDATA%\PYIME\tsf.log`(DLL)、`log.txt`(server)。
