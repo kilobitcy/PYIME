@@ -13,7 +13,7 @@ pub struct Ime {
     engine: RefCell<Engine>,
     user_path: Option<PathBuf>,
     /// 测试用:记录"模拟按键"而不真的发送。
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-util"))]
     pressed: RefCell<Vec<u16>>,
 }
 
@@ -88,34 +88,34 @@ impl Ime {
             engine.set_user(UserModel::import(&text));
         }
         log::line(&format!("引擎就绪,耗时 {:?}", t.elapsed()));
-        Rc::new(Ime { engine: RefCell::new(engine), user_path, #[cfg(test)] pressed: RefCell::new(Vec::new()) })
+        Rc::new(Ime { engine: RefCell::new(engine), user_path, #[cfg(any(test, feature = "test-util"))] pressed: RefCell::new(Vec::new()) })
     }
 
     /// 测试用:不读盘、不存盘。
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-util"))]
     pub fn with_engine(engine: Engine) -> Rc<Ime> {
         Rc::new(Ime { engine: RefCell::new(engine), user_path: None, pressed: RefCell::new(Vec::new()) })
     }
 
     /// 测试用:当前用户学习数据的存盘文本。
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-util"))]
     pub fn user_export(&self) -> String {
         self.engine.borrow().user().export()
     }
 
     /// 向应用注入一次按键(测试里只记录)。
     pub fn press(&self, vk: u16) {
-        #[cfg(test)]
+        #[cfg(any(test, feature = "test-util"))]
         self.pressed.borrow_mut().push(vk);
         #[cfg(windows)]
-        #[cfg(not(test))]
+        #[cfg(not(any(test, feature = "test-util")))]
         send_key(vk);
-        #[cfg(not(any(windows, test)))]
+        #[cfg(not(any(windows, test, feature = "test-util")))]
         let _ = vk;
     }
 
     /// 测试用:取走已记录的模拟按键。
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-util"))]
     pub fn take_pressed(&self) -> Vec<u16> {
         std::mem::take(&mut self.pressed.borrow_mut())
     }

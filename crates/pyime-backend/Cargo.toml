@@ -7,3 +7,7 @@ license = "GPL-3.0-only"
 [dependencies]
 serde_json = "1"
 pyime-engine = { path = "../pyime-engine" }
+
+[features]
+# 给下游 crate 的测试用:暴露 Ime::with_engine 等测试辅助,并让 press 只记录不真发按键。
+test-util = []
