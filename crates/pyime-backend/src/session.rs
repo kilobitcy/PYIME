@@ -29,6 +29,24 @@ fn digit_index(key: i64) -> Option<usize> {
     }
 }
 
+/// 取末尾至多 3 个字,作为下一个词的上文。
+fn tail3(s: &str) -> String {
+    let n = s.chars().count();
+    s.chars().skip(n.saturating_sub(3)).collect()
+}
+
+/// 一次学习:(键入拼音, 词, 用到的模糊规则, 上文)。
+type Learned = (String, String, u16, String);
+
+/// 刚上屏的一次组词:记下它做过的学习,若随后被退格删掉、对同一串拼音改选别的词,就把这些学习撤回。
+struct Last {
+    learned: Vec<Learned>,
+    typed: String,
+    text: String,
+    /// 上屏后在非组词态按过退格。
+    backspaced: bool,
+}
+
 pub struct Session {
     ime: Rc<Ime>,
     /// 已选定、尚未上屏的文字(分段选词时累积)。
@@ -48,11 +66,14 @@ pub struct Session {
     english: bool,
     /// Shift 按下后尚未按过其他键,此时松开即视为"单击 Shift"。
     shift_pending: bool,
+    /// 本次组词已做的学习。
+    learned: Vec<Learned>,
+    last: Option<Last>,
 }
 
 impl Session {
     pub fn new(ime: Rc<Ime>) -> Session {
-        Session { ime, pending: String::new(), input: String::new(), cands: Vec::new(), typed_all: String::new(), context: String::new(), segments: 0, page: 0, cursor: 0, english: false, shift_pending: false }
+        Session { ime, pending: String::new(), input: String::new(), cands: Vec::new(), typed_all: String::new(), context: String::new(), segments: 0, page: 0, cursor: 0, english: false, shift_pending: false, learned: Vec::new(), last: None }
     }
 
     fn composing(&self) -> bool {
@@ -101,6 +122,9 @@ impl Session {
             m @ ("filterKeyDown" | "onKeyDown") => {
                 self.shift_pending = is_shift;
                 let wants = self.wants_key(key, shift_down);
+                if !wants {
+                    self.note_passthrough(key);
+                }
                 resp["return"] = json!(wants);
                 if wants && m == "onKeyDown" {
                     self.on_key_down(key, &mut resp);
@@ -129,8 +153,38 @@ impl Session {
         }
     }
 
+    /// 下一个词的上文:已选定未上屏的文字接在已上屏上文之后。
+    fn prev(&self) -> String {
+        tail3(&format!("{}{}", self.context, self.pending))
+    }
+
+    /// 应用收到的按键(输入法未接管)对"刚上屏"状态的影响:退格记为可能在撤销,
+    /// Shift/Ctrl/Alt 与字母不影响,其他键说明用户接受了上屏结果。
+    fn note_passthrough(&mut self, key: i64) {
+        if key == VK_BACK {
+            if let Some(l) = &mut self.last {
+                l.backspaced = true;
+            }
+        } else if !VK_SHIFT_KEYS.contains(&key) && !matches!(key, 17 | 18 | 65..=90) {
+            self.last = None;
+        }
+    }
+
+    /// 一次组词整句上屏:若是对刚被退格删掉的同一串拼音改选了别的词,撤回上次的学习;再记下这次。
+    fn finish_commit(&mut self, typed: String, text: &str) {
+        if let Some(prev) = self.last.take() {
+            if prev.backspaced && prev.typed == typed && prev.text != text {
+                crate::inputlog::retract(&prev.learned);
+                for (t, w, pairs, ctx) in &prev.learned {
+                    self.ime.unlearn(t, w, *pairs, ctx);
+                }
+            }
+        }
+        self.last = Some(Last { learned: std::mem::take(&mut self.learned), typed, text: text.to_string(), backspaced: false });
+    }
+
     fn refresh(&mut self) {
-        self.cands = if self.input.is_empty() { Vec::new() } else { self.ime.candidates(&self.input, &self.context) };
+        self.cands = if self.input.is_empty() { Vec::new() } else { self.ime.candidates(&self.input, &self.prev()) };
         self.page = 0;
         self.cursor = 0;
     }
@@ -138,8 +192,13 @@ impl Session {
     /// 选中页内第 `idx` 个候选;输入耗尽时返回应上屏的文字。
     fn select(&mut self, idx: usize) -> Option<String> {
         let c = self.page_items().get(idx)?.clone();
+        let tops: Vec<&str> = self.cands.iter().map(|c| c.text.as_str()).collect();
+        let (input, ctx) = (self.input.clone(), self.prev());
+        let index = self.page * PAGE_SIZE + idx;
         let typed: String = self.input.drain(..c.consumed).collect();
-        self.ime.learn(&typed, &c.text);
+        crate::inputlog::select(&input, &ctx, &typed, &c.text, index, &tops);
+        self.ime.learn(&typed, &c.text, c.pairs, &ctx);
+        self.learned.push((typed.clone(), c.text.clone(), c.pairs, ctx));
         self.pending.push_str(&c.text);
         self.typed_all.push_str(&typed);
         self.segments += 1;
@@ -147,11 +206,13 @@ impl Session {
             self.cands.clear();
             let text = std::mem::take(&mut self.pending);
             if self.segments > 1 {
-                self.ime.learn(&self.typed_all, &text); // 分段选完的整句也学
+                self.ime.learn(&self.typed_all, &text, 0, ""); // 分段选完的整句也学
+                self.learned.push((self.typed_all.clone(), text.clone(), 0, String::new()));
             }
-            self.typed_all.clear();
+            let typed_all = std::mem::take(&mut self.typed_all);
+            self.finish_commit(typed_all, &text);
             self.segments = 0;
-            self.context = text.chars().rev().take(3).collect::<Vec<_>>().into_iter().rev().collect();
+            self.context = tail3(&format!("{}{}", self.context, text));
             return Some(text);
         }
         self.refresh();
@@ -186,6 +247,8 @@ impl Session {
         self.pending.clear();
         self.input.clear();
         self.typed_all.clear();
+        self.learned.clear();
+        self.last = None;
         self.segments = 0;
         self.context.clear();
         text

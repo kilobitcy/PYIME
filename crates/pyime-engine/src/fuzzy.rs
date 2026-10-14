@@ -38,35 +38,35 @@ fn split(s: &str) -> (&str, &str) {
     s.split_at(n)
 }
 
-/// 与 `from` 互为模糊的另一侧写法。
-fn others<'a>(pairs: &[(&'a str, &'a str)], on: &[bool; 5], from: &str) -> Vec<&'a str> {
+/// 与 `from` 互为模糊的另一侧写法,带规则位(声母 0–4,韵母 5–9,用于 `pairs` 位掩码)。
+fn others<'a>(pairs: &[(&'a str, &'a str)], on: &[bool; 5], from: &str, shift: u16) -> Vec<(&'a str, u16)> {
     let mut out = Vec::new();
     for (i, &(a, b)) in pairs.iter().enumerate() {
         if !on[i] {
             continue;
         }
         if a == from {
-            out.push(b);
+            out.push((b, 1 << (shift + i as u16)));
         } else if b == from {
-            out.push(a);
+            out.push((a, 1 << (shift + i as u16)));
         }
     }
     out
 }
 
-/// 返回 `(词典音节, 模糊次数)`;第一项恒为精确写法 `(s, 0)`,其余只含合法音节。
-pub fn variants(s: &str, cfg: &FuzzyConfig) -> Vec<(String, u8)> {
+/// 返回 `(词典音节, 模糊次数, 用到的规则位掩码)`;第一项恒为精确写法 `(s, 0, 0)`,其余只含合法音节。
+pub fn variants(s: &str, cfg: &FuzzyConfig) -> Vec<(String, u8, u16)> {
     let (ini, fin) = split(s);
-    let mut inis: Vec<(&str, u8)> = vec![(ini, 0)];
-    inis.extend(others(&INITIALS, &cfg.initials, ini).into_iter().map(|x| (x, 1)));
-    let mut fins: Vec<(&str, u8)> = vec![(fin, 0)];
-    fins.extend(others(&FINALS, &cfg.finals, fin).into_iter().map(|x| (x, 1)));
-    let mut out = vec![(s.to_string(), 0)];
-    for &(i, ci) in &inis {
-        for &(f, cf) in &fins {
+    let mut inis: Vec<(&str, u8, u16)> = vec![(ini, 0, 0)];
+    inis.extend(others(&INITIALS, &cfg.initials, ini, 0).into_iter().map(|(x, m)| (x, 1, m)));
+    let mut fins: Vec<(&str, u8, u16)> = vec![(fin, 0, 0)];
+    fins.extend(others(&FINALS, &cfg.finals, fin, 5).into_iter().map(|(x, m)| (x, 1, m)));
+    let mut out = vec![(s.to_string(), 0, 0)];
+    for &(i, ci, mi) in &inis {
+        for &(f, cf, mf) in &fins {
             let cand = format!("{i}{f}");
             if ci + cf > 0 && is_syllable(&cand) {
-                out.push((cand, ci + cf));
+                out.push((cand, ci + cf, mi | mf));
             }
         }
     }
@@ -75,17 +75,17 @@ pub fn variants(s: &str, cfg: &FuzzyConfig) -> Vec<(String, u8)> {
 
 /// 末尾没打完的字母 `rest` 可能对应的音节:`(音节, 模糊次数)`。
 /// 只以"音节开头"匹配;声母套用模糊音,单独的 z/c/s 不吞掉 zh/ch/sh 开头的音节。
-pub fn partial(rest: &str, cfg: &FuzzyConfig) -> Vec<(&'static str, u8)> {
+pub fn partial(rest: &str, cfg: &FuzzyConfig) -> Vec<(&'static str, u8, u16)> {
     let (ini, tail) = split(rest);
-    let mut starts: Vec<(String, &str, u8)> = vec![(rest.to_string(), ini, 0)];
-    for a in others(&INITIALS, &cfg.initials, ini) {
-        starts.push((format!("{a}{tail}"), a, 1));
+    let mut starts: Vec<(String, &str, u8, u16)> = vec![(rest.to_string(), ini, 0, 0)];
+    for (a, m) in others(&INITIALS, &cfg.initials, ini, 0) {
+        starts.push((format!("{a}{tail}"), a, 1, m));
     }
     let mut out = Vec::new();
     for t in all() {
         let t_ini = split(t).0;
-        if let Some(&(_, _, c)) = starts.iter().find(|(pre, i, _)| t.starts_with(pre.as_str()) && t_ini == *i) {
-            out.push((t, c));
+        if let Some(&(_, _, c, m)) = starts.iter().find(|(pre, i, _, _)| t.starts_with(pre.as_str()) && t_ini == *i) {
+            out.push((t, c, m));
         }
     }
     out
@@ -96,12 +96,12 @@ mod tests {
     use super::*;
 
     fn keys(s: &str, cfg: &FuzzyConfig) -> Vec<String> {
-        variants(s, cfg).into_iter().map(|(k, _)| k).collect()
+        variants(s, cfg).into_iter().map(|(k, _, _)| k).collect()
     }
 
     #[test]
     fn 精确写法永远第一() {
-        assert_eq!(variants("zi", &FuzzyConfig::default())[0], ("zi".to_string(), 0));
+        assert_eq!(variants("zi", &FuzzyConfig::default())[0], ("zi".to_string(), 0, 0));
         assert_eq!(keys("zi", &FuzzyConfig::none()), ["zi"]);
     }
 
@@ -122,8 +122,8 @@ mod tests {
     #[test]
     fn 同时模糊计两次且丢弃非法音节() {
         let v = variants("sen", &FuzzyConfig::default());
-        assert!(v.contains(&("sheng".to_string(), 2)));
-        assert!(v.iter().all(|(k, _)| is_syllable(k)));
+        assert!(v.contains(&("sheng".to_string(), 2, 1 << 2 | 1 << 6)));
+        assert!(v.iter().all(|(k, _, _)| is_syllable(k)));
     }
 
     #[test]
@@ -136,10 +136,10 @@ mod tests {
     #[test]
     fn 末尾残缺音节按开头匹配并套用声母模糊() {
         let got = partial("p", &FuzzyConfig::default());
-        assert!(got.contains(&("pie", 0)) && got.contains(&("pian", 0)) && !got.iter().any(|(t, _)| t.starts_with('b')));
+        assert!(got.contains(&("pie", 0, 0)) && got.contains(&("pian", 0, 0)) && !got.iter().any(|(t, _, _)| t.starts_with('b')));
         let got = partial("s", &FuzzyConfig::default());
-        assert!(got.contains(&("si", 0)) && got.contains(&("shi", 1)));
+        assert!(got.contains(&("si", 0, 0)) && got.contains(&("shi", 1, 1 << 2)));
         let got = partial("sh", &FuzzyConfig::none());
-        assert!(got.contains(&("shi", 0)) && !got.iter().any(|(t, _)| *t == "si"));
+        assert!(got.contains(&("shi", 0, 0)) && !got.iter().any(|(t, _, _)| *t == "si"));
     }
 }

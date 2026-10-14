@@ -1,4 +1,5 @@
 mod ime;
+mod inputlog;
 mod log;
 mod protocol;
 mod register;
@@ -33,6 +34,7 @@ fn main() {
     let mut stdout = io::stdout().lock();
     let mut sessions: HashMap<String, session::Session> = HashMap::new();
     log::init();
+    inputlog::init();
     log::install_panic_hook();
     let ime = ime::Ime::load();
     log::line(&format!(

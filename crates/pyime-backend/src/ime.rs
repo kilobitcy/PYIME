@@ -64,14 +64,33 @@ impl Ime {
         Rc::new(Ime { engine: RefCell::new(engine), user_path: None })
     }
 
+    /// 测试用:当前用户学习数据的存盘文本。
+    #[cfg(test)]
+    pub fn user_export(&self) -> String {
+        self.engine.borrow().user().export()
+    }
+
     pub fn candidates(&self, input: &str, context: &str) -> Vec<Candidate> {
         self.engine.borrow().candidates_after(input, context)
     }
 
-    /// 学习一次选择并存盘;存盘失败只记日志。
-    pub fn learn(&self, typed: &str, text: &str) {
+    /// 学习一次选择并存盘;存盘失败只记日志。`pairs` 是该候选用到的模糊规则,`prev` 是其上文。
+    pub fn learn(&self, typed: &str, text: &str, pairs: u16, prev: &str) {
         let mut engine = self.engine.borrow_mut();
         engine.learn(typed, text);
+        engine.learn_fuzzy(pairs);
+        engine.learn_next(prev, text);
+        self.save(&engine);
+    }
+
+    /// 撤销一次 `learn` 并存盘。
+    pub fn unlearn(&self, typed: &str, text: &str, pairs: u16, prev: &str) {
+        let mut engine = self.engine.borrow_mut();
+        engine.unlearn(typed, text, pairs, prev);
+        self.save(&engine);
+    }
+
+    fn save(&self, engine: &Engine) {
         let Some(path) = &self.user_path else { return };
         if let Some(dir) = path.parent() {
             let _ = std::fs::create_dir_all(dir);

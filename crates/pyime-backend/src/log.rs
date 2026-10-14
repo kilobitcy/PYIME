@@ -10,7 +10,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 const MAX_BYTES: u64 = 5 * 1024 * 1024;
 static FILE: OnceLock<Mutex<File>> = OnceLock::new();
 
-fn dir() -> Option<PathBuf> {
+pub(crate) fn dir() -> Option<PathBuf> {
     std::env::var_os("LOCALAPPDATA").map(|p| PathBuf::from(p).join("PYIME"))
 }
 

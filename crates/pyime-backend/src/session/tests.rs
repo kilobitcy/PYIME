@@ -198,3 +198,50 @@ fn 分段选完后整句被学习() {
     let r = key(&mut s, "onKeyDown", 49); // 再选 好
     assert_eq!(r["commitString"], "你好");
 }
+
+#[test]
+fn 退格删掉上屏后对同一拼音改选别的词_撤回上次学习() {
+    let mut s = session();
+    press(&mut s, &[N, I]);
+    press(&mut s, &[32]); // 空格选 你
+    assert!(s.ime.user_export().contains("ni\t你\t1"));
+    key(&mut s, "filterKeyDown", VK_BACK); // 应用删掉了刚上屏的字
+    press(&mut s, &[N, I]);
+    press(&mut s, &[50]); // 数字 2 选 泥
+    let exported = s.ime.user_export();
+    assert!(exported.contains("ni\t泥\t1") && !exported.contains("ni\t你"), "{exported}");
+}
+
+#[test]
+fn 没按退格再选别的词_不撤回() {
+    let mut s = session();
+    press(&mut s, &[N, I]);
+    press(&mut s, &[32]);
+    press(&mut s, &[N, I]);
+    press(&mut s, &[50]);
+    let exported = s.ime.user_export();
+    assert!(exported.contains("ni\t泥\t1") && exported.contains("ni\t你\t1"), "{exported}");
+}
+
+#[test]
+fn 退格后重选同一个词_不撤回() {
+    let mut s = session();
+    press(&mut s, &[N, I]);
+    press(&mut s, &[32]);
+    key(&mut s, "filterKeyDown", VK_BACK);
+    press(&mut s, &[N, I]);
+    press(&mut s, &[32]);
+    assert!(s.ime.user_export().contains("ni\t你\t2"));
+}
+
+#[test]
+fn 退格后又按了别的键_不再视为撤销() {
+    let mut s = session();
+    press(&mut s, &[N, I]);
+    press(&mut s, &[32]);
+    key(&mut s, "filterKeyDown", VK_BACK);
+    key(&mut s, "filterKeyDown", 37); // 左方向键
+    press(&mut s, &[N, I]);
+    press(&mut s, &[50]);
+    assert!(s.ime.user_export().contains("ni\t你\t1"));
+}

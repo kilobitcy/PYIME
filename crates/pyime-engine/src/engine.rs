@@ -38,6 +38,8 @@ pub struct Candidate {
     pub consumed: usize,
     /// 模糊替换总次数,0 表示完全精确。
     pub fuzzy: u8,
+    /// 用到的模糊规则位掩码(声母 0–4,韵母 5–9),供选中后学习个人偏好。
+    pub pairs: u16,
 }
 
 #[derive(Debug, Clone)]
@@ -47,12 +49,22 @@ struct Word {
     text: String,
     score: f64,
     fuzzy: u8,
+    pairs: u16,
     /// 末尾残缺音节凑出来的词,不算"精确"。
     partial: bool,
 }
 
+/// 沿切分格累积的模糊状态:次数、个人偏好折扣、用到的规则位。
+#[derive(Clone, Copy, Default)]
+struct Acc {
+    fuzzy: u8,
+    discount: f64,
+    pairs: u16,
+}
+
 pub struct Engine {
     dict: Dict,
+    fuzzy_penalty: f64,
     cfg: FuzzyConfig,
     user: UserModel,
     gram: Option<Gram>,
@@ -62,7 +74,7 @@ pub struct Engine {
 
 impl Engine {
     pub fn new(dict: Dict, cfg: FuzzyConfig) -> Engine {
-        Engine { dict, cfg, user: UserModel::default(), gram: None, gram_weight: GRAM_WEIGHT, gram_threshold: GRAM_THRESHOLD }
+        Engine { dict, fuzzy_penalty: FUZZY_PENALTY, cfg, user: UserModel::default(), gram: None, gram_weight: GRAM_WEIGHT, gram_threshold: GRAM_THRESHOLD }
     }
 
     pub fn set_gram(&mut self, gram: Gram) {
@@ -78,7 +90,12 @@ impl Engine {
     }
 
     fn gram_bonus(&self, ctx: &str, w: &str) -> f64 {
-        self.gram.as_ref().map_or(0.0, |g| self.gram_weight * (g.bonus(ctx, w) - self.gram_threshold).max(0.0))
+        let gram = self.gram.as_ref().map_or(0.0, |g| self.gram_weight * (g.bonus(ctx, w) - self.gram_threshold).max(0.0));
+        gram + self.user.collocation(ctx, w)
+    }
+
+    pub fn set_fuzzy_penalty(&mut self, p: f64) {
+        self.fuzzy_penalty = p;
     }
 
     pub fn set_user(&mut self, user: UserModel) {
@@ -94,46 +111,75 @@ impl Engine {
         self.user.learn(typed, text);
     }
 
+    /// 撤销一次选择产生的全部学习(`learn` / `learn_fuzzy` / `learn_next`)。
+    pub fn unlearn(&mut self, typed: &str, text: &str, pairs: u16, prev: &str) {
+        self.user.unlearn(typed, text);
+        self.user.unlearn_fuzzy(pairs);
+        if !prev.is_empty() {
+            self.user.unlearn_next(prev, text);
+        }
+    }
+
+    /// 在上文 `prev` 之后上屏了 `text`,记下个人搭配。
+    pub fn learn_next(&mut self, prev: &str, text: &str) {
+        self.user.learn_next(prev, text);
+    }
+
+    /// 选中的候选用到了这些模糊规则,记下以便降低这几对的惩罚。
+    pub fn learn_fuzzy(&mut self, pairs: u16) {
+        self.user.learn_fuzzy(pairs);
+    }
+
+    /// 同一键取词频前 `PER_KEY` 个,再补上更靠后但用户学过的词(否则截断会让学习加分落空)。
+    fn top_entries(&self, key: &str) -> Vec<crate::dict::Entry> {
+        self.dict.get(key).into_iter().enumerate().filter(|(i, e)| *i < PER_KEY || self.user.knows(&e.word)).map(|(_, e)| e).collect()
+    }
+
+    /// 再走一个音节:累加模糊次数、规则位,以及这些规则的个人偏好折扣。
+    fn step(&self, acc: Acc, count: u8, pairs: u16) -> Acc {
+        Acc { fuzzy: acc.fuzzy + count, discount: acc.discount + self.user.fuzzy_discount(pairs), pairs: acc.pairs | pairs }
+    }
+
     /// 末尾没打完的字母按音节开头匹配,词在输入末尾结束。
-    fn grow_partial(&self, input: &str, start: usize, pos: usize, key: &str, fuzzy: u8, out: &mut Vec<Word>) {
+    fn grow_partial(&self, input: &str, start: usize, pos: usize, key: &str, acc: Acc, out: &mut Vec<Word>) {
         if pos >= input.len() {
             return;
         }
         let rest = &input[pos..];
         // 本身就是完整音节时,它(及其模糊写法)已由 grow 按完整音节处理,不再当残缺重复一遍
         let complete: Vec<String> = if is_syllable(rest) { variants(rest, &self.cfg).into_iter().map(|v| v.0).collect() } else { Vec::new() };
-        for (syl, c) in partial(rest, &self.cfg) {
+        for (syl, c, m) in partial(rest, &self.cfg) {
             if complete.iter().any(|k| k == syl) {
                 continue;
             }
             let next = if key.is_empty() { syl.to_string() } else { format!("{key} {syl}") };
-            let f = fuzzy + c;
-            for e in self.dict.get(&next).into_iter().take(PER_KEY) {
+            let a = self.step(acc, c, m);
+            for e in self.top_entries(&next) {
                 let bonus = self.user.bonus(&input[start..], &e.word);
-                let score = f64::from(e.weight.max(1)).ln() - FUZZY_PENALTY * f64::from(f) - PARTIAL_PENALTY + bonus - if key.is_empty() { SINGLE_CHAR_DISCOUNT } else { 0.0 };
-                out.push(Word { start, end: input.len(), text: e.word, score, fuzzy: f, partial: true });
+                let score = f64::from(e.weight.max(1)).ln() - self.fuzzy_penalty * f64::from(a.fuzzy) + a.discount - PARTIAL_PENALTY + bonus - if key.is_empty() { SINGLE_CHAR_DISCOUNT } else { 0.0 };
+                out.push(Word { start, end: input.len(), text: e.word, score, fuzzy: a.fuzzy, pairs: a.pairs, partial: true });
             }
         }
     }
 
     /// 收集从 `pos` 出发的所有词(沿切分格深搜,词典前缀不存在即剪枝)。
-    fn grow(&self, input: &str, start: usize, pos: usize, key: &str, fuzzy: u8, depth: usize, out: &mut Vec<Word>) {
-        self.grow_partial(input, start, pos, key, fuzzy, out);
+    fn grow(&self, input: &str, start: usize, pos: usize, key: &str, acc: Acc, depth: usize, out: &mut Vec<Word>) {
+        self.grow_partial(input, start, pos, key, acc, out);
         for syl in syllables_at(input, pos) {
             let end = pos + syl.len();
-            for (v, c) in variants(syl, &self.cfg) {
+            for (v, c, m) in variants(syl, &self.cfg) {
                 let next = if key.is_empty() { v } else { format!("{key} {v}") };
                 if !self.dict.has_prefix(&next) {
                     continue;
                 }
-                let f = fuzzy + c;
-                for e in self.dict.get(&next).into_iter().take(PER_KEY) {
+                let a = self.step(acc, c, m);
+                for e in self.top_entries(&next) {
                     let bonus = self.user.bonus(&input[start..end], &e.word);
-                    let score = f64::from(e.weight.max(1)).ln() - FUZZY_PENALTY * f64::from(f) + bonus - if depth == 0 { SINGLE_CHAR_DISCOUNT } else { 0.0 };
-                    out.push(Word { start, end, text: e.word, score, fuzzy: f, partial: false });
+                    let score = f64::from(e.weight.max(1)).ln() - self.fuzzy_penalty * f64::from(a.fuzzy) + a.discount + bonus - if depth == 0 { SINGLE_CHAR_DISCOUNT } else { 0.0 };
+                    out.push(Word { start, end, text: e.word, score, fuzzy: a.fuzzy, pairs: a.pairs, partial: false });
                 }
                 if depth + 1 < MAX_SYLLABLES {
-                    self.grow(input, start, end, &next, f, depth + 1, out);
+                    self.grow(input, start, end, &next, a, depth + 1, out);
                 }
             }
         }
@@ -156,14 +202,14 @@ impl Engine {
             for s in syllables_at(input, a) {
                 reach[a + s.len()] = true;
             }
-            self.grow(input, a, a, "", 0, 0, &mut words);
+            self.grow(input, a, a, "", Acc::default(), 0, &mut words);
         }
         for (typed, text, bonus) in self.user.matching(input) {
             if !words.iter().any(|w| w.start == 0 && w.end == typed.len() && w.text == text) {
-                words.push(Word { start: 0, end: typed.len(), text: text.to_string(), score: USER_PHRASE_BASE + bonus, fuzzy: 0, partial: false });
+                words.push(Word { start: 0, end: typed.len(), text: text.to_string(), score: USER_PHRASE_BASE + bonus, fuzzy: 0, pairs: 0, partial: false });
             }
         }
-        if self.gram.is_some() && !context.is_empty() {
+        if !context.is_empty() {
             for w in words.iter_mut().filter(|w| w.start == 0) {
                 w.score += self.gram_bonus(context, &w.text);
             }
@@ -180,7 +226,7 @@ impl Engine {
         let sents: Vec<Candidate> = scored.into_iter().map(|s| s.0).collect();
         let mut firsts: Vec<&Word> = words.iter().filter(|w| w.start == 0).collect();
         firsts.sort_by(|a, b| b.end.cmp(&a.end).then(b.score.total_cmp(&a.score)));
-        let as_cand = |w: &&Word| Candidate { text: w.text.clone(), consumed: w.end, fuzzy: w.fuzzy };
+        let as_cand = |w: &&Word| Candidate { text: w.text.clone(), consumed: w.end, fuzzy: w.fuzzy, pairs: w.pairs };
         let (whole, rest): (Vec<&Word>, Vec<&Word>) = firsts.into_iter().partition(|w| w.end == far);
         // 没有精确的整段词、整句完全精确且得分高于最佳整段词时,整句排最前;否则整句紧跟整段词
         let exact_whole = whole.iter().any(|w| w.fuzzy == 0);
@@ -231,18 +277,19 @@ fn sentences(words: &[Word], far: usize, bigram: &dyn Fn(&str, &str) -> f64) -> 
     let mut out: Vec<(Candidate, f64, bool)> = Vec::new();
     for r in 0..best[far].len() {
         let (mut pos, mut rank) = (far, r);
-        let (mut parts, mut fuzzy, mut partial) = (Vec::new(), 0u8, false);
+        let (mut parts, mut fuzzy, mut pairs, mut partial) = (Vec::new(), 0u8, 0u16, false);
         while pos > 0 {
             let (_, wi, prev_rank, _, _) = &best[pos][rank];
             let w = &words[*wi];
             parts.push(w.text.as_str());
             fuzzy = fuzzy.saturating_add(w.fuzzy);
+            pairs |= w.pairs;
             partial |= w.partial;
             (pos, rank) = (w.start, *prev_rank);
         }
         let text: String = parts.iter().rev().copied().collect();
         if parts.len() >= 2 && out.len() < BEAM && !out.iter().any(|c| c.0.text == text) {
-            out.push((Candidate { text, consumed: far, fuzzy }, best[far][r].0, fuzzy == 0 && !partial));
+            out.push((Candidate { text, consumed: far, fuzzy, pairs }, best[far][r].0, fuzzy == 0 && !partial));
         }
     }
     // 三档:精确 / 仅模糊 / 含残缺音节;各档按得分,取 3+2+1 条,免得被前一档的噪声挤掉
@@ -364,5 +411,50 @@ mod tests {
         assert!(t.contains(&"再追加".to_string()));
         e.learn("zaizhuijia", "再追加");
         assert_eq!(texts(&e, "zaizhuijia")[0], "再追加");
+    }
+
+    #[test]
+    fn 词频靠后的学过词在句中也能进候选() {
+        // "shi" 下有 10 个词,学过的 "氏" 词频排第 10,超出 PER_KEY
+        let mut ents = vec![("ni", "你", 5000)];
+        let words = ["是", "时", "事", "市", "十", "石", "室", "世", "食", "氏"];
+        let mut v: Vec<(&str, &str, u32)> = ents.drain(..).collect();
+        for (i, w) in words.iter().enumerate() {
+            v.push(("shi", w, 5000 - i as u32 * 10));
+        }
+        let mut e = engine(&v);
+        assert_eq!(texts(&e, "nishi")[0], "你是");
+        e.learn("shi", "氏");
+        assert_eq!(texts(&e, "nishi")[0], "你氏");
+    }
+
+    #[test]
+    fn 个人模糊偏好降低该规则惩罚() {
+        // 之 的词频是 字 的 e^3 倍,惩罚 4 时输给精确的 字;接受两次 z=zh 后折扣约 1.1,反超
+        let mut e = engine(&[("zi", "字", 1000), ("zhi", "之", 20_000)]);
+        assert_eq!(texts(&e, "zi")[0], "字");
+        let c = e.candidates("zi").into_iter().find(|c| c.text == "之").unwrap();
+        assert_eq!(c.pairs, 1);
+        e.learn_fuzzy(c.pairs);
+        e.learn_fuzzy(c.pairs);
+        assert_eq!(texts(&e, "zi")[0], "之");
+    }
+
+    #[test]
+    fn 惩罚可调() {
+        let mut e = engine(&[("zi", "字", 1000), ("zhi", "之", 20_000)]);
+        e.set_fuzzy_penalty(2.0);
+        assert_eq!(texts(&e, "zi")[0], "之");
+    }
+
+    #[test]
+    fn 个人搭配只在对应上文下提权() {
+        let mut e = engine(&[("shi", "是", 5000), ("shi", "市", 4900)]);
+        assert_eq!(e.candidates_after("shi", "我")[0].text, "是");
+        e.learn_next("上海", "市");
+        e.learn_next("上海", "市");
+        assert_eq!(e.candidates_after("shi", "上海")[0].text, "市");
+        assert_eq!(e.candidates_after("shi", "我")[0].text, "是");
+        assert_eq!(e.candidates("shi")[0].text, "是");
     }
 }
