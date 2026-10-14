@@ -5,6 +5,14 @@ edition = "2021"
 license = "GPL-3.0-only"
 publish = false
 
+[[bin]]
+name = "pyime-server"
+path = "src/main.rs"
+
+[[bin]]
+name = "pyime-probe"
+path = "src/bin/probe.rs"
+
 [dependencies]
 pyime-backend = { path = "../pyime-backend" }
 pyime-protocol = { path = "../pyime-protocol" }
