@@ -21,17 +21,24 @@
 3. `lue`/`nue` 与 `lve`/`nve` 等价。
 
 非目标:整句"选两次才生效"(B,暂缓)、日志补版本号/"看过没选"事件、错例报告工具、
-模糊整句与精确生僻组合的排序(如 `wobugangyu`)。
+模糊整句与精确生僻组合的排序(如 `wobugangyu`)、组字中 Ctrl+字母(Ctrl+C/V 等)放行、分段 forget。
 
 ## A. 退格删光即撤销学习(`crates/pyime-backend/src/session.rs`)
 
-- `Last.backspaced: bool` 改为 `backspaces: usize`;`note_passthrough` 中退格时累加。
+- `Last.backspaces: usize` 取代 `backspaced: bool`;放行的退格在 `note_passthrough` 中累加,
+  **只在 `filterKeyDown` 计数**(`onKeyDown` 不重复计),避免同一次按键被计两次。
 - 累加后若 `backspaces >= text.chars().count()`:写 `inputlog::retract(&learned)`,
   对每项调用 `ime.unlearn`,随后 `self.last = None`(防重复撤回)。
 - 保留原规则:`finish_commit` 中 `backspaces > 0 && 同一 typed && 不同 text` 仍撤回
-  (此时尚未删光的情形,例如只删了部分后整串重打)。
-- 其他键清空 `last` 的现有行为不变(方向键、回车、标点等视为接受上屏)。
-- 已知局限:光标不在上屏文字末尾时的退格会被误计;后果仅为少学一次,可接受。
+  (只删了部分后整串重打的情形)。
+- **标点结尾的上屏也受保护**:`punctuate()` 现在 `commit_all()` 后清空 `last`;改为
+  若本次有组词上屏,保留 `last` 并把输出的标点字符并入 `Last.text`(退格阈值随之计入标点)。
+  成对符号(`Mapped::Open`,会注入左方向键)例外,仍清空 `last`。
+- **上文同步回退**:放行的退格每计一次,`context` 去掉末字;删光时清空 `context`。
+  否则删掉"亲继续"后重打 `qin`→请 会学到假搭配 (亲继续 → 请)。
+- 其他键清空 `last` 的现有行为不变(方向键、回车等视为接受上屏)。
+- 已知局限(后果至多少学或少撤一次,可接受):光标不在上屏文字末尾时退格被误计;
+  Ctrl+Backspace 整词删除只计 1 次;选中后删除(Shift+方向键/鼠标)不触发撤销。
 
 ## D. Ctrl+Shift+数字 删除学习(engine + backend)
 
@@ -42,19 +49,27 @@
 
 ### 后端
 - 组字中按下 Ctrl+Shift+N(N 为当前页有效序号):对该候选 `forget`,写日志
-  `{"ts":…, "forget": 词, "input": 当前拼音}`,刷新候选(保持当前输入),不上屏。
+  `{"ts":…, "forget": 词, "input": 当前拼音}`,刷新候选(保持当前输入;页码仍有效则保持当前页),不上屏。
 - 修正现状:Ctrl 按下时数字键不得当作选词;Ctrl+Shift+数字在组字中由输入法接管,
   非组字时放行。其他 Ctrl+数字 组合在组字中同样不选词(放行)。
-- `pyime-replay` 识别 `forget` 行,调用 `engine.forget`,保证回放与线上一致。
+- `pyime-replay` 识别 `forget` 行(须在解析普通选词行之前判断,否则会被静默跳过),
+  调用 `engine.forget`,保证回放与线上一致。
 
-### 效果
-- 词库外整句(如"亲继续")从学习补充中消失,最多以整句组合出现在后面;词库词仅失去个人加分。
+### 效果与局限
+- 词库外整句(如"亲继续",本次污染即为整串 pair `qinjixu→亲继续`)从学习补充中消失,
+  最多以整句组合出现在后面;词库词仅失去个人加分。
+- 若整句排前是**分段学习**造成的(例如学过 `qin→亲`),`forget("亲继续")` 不改变排序。
+  本次不做分段 forget;forget 后候选文本序列无变化时,日志记 `"noop": true`,供后续评估。
 
-## 2. lue/nue 规范化(`crates/pyime-engine/src/fuzzy.rs`)
+## 2. lue/nue 规范化(`pinyin.rs` 定义,三处共用)
 
-- `variants()` 入口把 `lue→lve`、`nue→nve`,规范写法作为精确项(模糊次数 0、规则位 0),
-  后续模糊展开基于规范写法(如 `nue` 经 n=l 得 `lve`)。
-- 切分(`pinyin.rs`)不变:两种写法都已是合法音节。
+- `pinyin::canonical(s) -> &str`:`lue→lve`、`nue→nve`,其余原样。
+- `fuzzy::variants()`:入口先规范化,规范写法作为精确项(模糊次数 0、规则位 0),
+  模糊展开基于规范写法(如 `nue` 经 n=l 得 `lve`);同步修改其文档注释
+  ("第一项恒为精确写法"改为"第一项恒为规范化后的精确写法")。
+- `fuzzy::partial()`:输出音节经 `canonical` 映射并去重,使残缺前缀 `chelu` 也能命中 `lve`。
+- `rime::parse_line()`:音节逐个 `canonical`,保证换词库或追加词库时 `lue` 键不会变得不可达。
+- 切分(`syllables_at`)不变:两种写法都已是合法音节。
 
 ## 测试
 
@@ -64,6 +79,10 @@
 - 后端会话测试:
   - 学过"亲继续"后上屏,退格 3 次 → 撤回,`qinjixu` 首选不再是"亲继续";
   - 只退格 1 次 → 不撤回;退格中途按方向键 → 不撤回;
+  - 整句 + 逗号上屏("亲继续，"),退格 4 次 → 撤回;成对括号上屏后 → 不跟踪;
+  - 同一退格的 `filterKeyDown` 与 `onKeyDown` 只计一次;
+  - 删光后重打 `qin`→请,不产生 (亲继续 → 请) 搭配;
+  - 残缺前缀 `chelu` 召回"策略"(引擎单测用小词典);
   - 组字中 Ctrl+Shift+2 → 第 2 候选被 forget,不上屏,候选刷新;
   - 非组字时 Ctrl+Shift+数字 → 放行;组字中 Ctrl+数字 → 不选词。
 - 离线验证:用用户 `user.txt`(仅本机 `/tmp`,不入库)对"亲继续" forget 后,
@@ -72,4 +91,6 @@
 ## 发布
 
 - 版本 0.1.8;release 说明写:退格删光撤销学习、Ctrl+Shift+数字删除学习词、lue/nue 修复。
-- 用户升级后用 Ctrl+Shift+数字 清理已污染的词。push/tag/发布前先征得同意。
+- release 说明须写明:**已学进去的错词(如重复选过 4 次的"亲继续")A 只撤最近一次,
+  需用 Ctrl+Shift+数字 手动删除**;否则升级后会误以为退格撤销无效。
+- push/tag/发布前先征得同意。
