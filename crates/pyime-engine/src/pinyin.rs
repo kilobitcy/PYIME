@@ -42,6 +42,15 @@ pub fn is_syllable(s: &str) -> bool {
     table().contains(s)
 }
 
+/// 统一 ü 的写法:`lue`/`nue` 与 `lve`/`nve` 同音,词库(rime-ice)用后者,输入两种都接受。
+pub fn canonical(s: &str) -> &str {
+    match s {
+        "lue" => "lve",
+        "nue" => "nve",
+        _ => s,
+    }
+}
+
 /// 音节最长 6 个字母(zhuang/chuang/shuang)。
 const MAX_LEN: usize = 6;
 
@@ -65,5 +74,12 @@ mod tests {
     #[test]
     fn 不合法的位置为空() {
         assert!(syllables_at("vv", 0).is_empty());
+    }
+
+    #[test]
+    fn lue_nue_规范为_lve_nve() {
+        assert_eq!(canonical("lue"), "lve");
+        assert_eq!(canonical("nue"), "nve");
+        assert_eq!(canonical("jue"), "jue");
     }
 }

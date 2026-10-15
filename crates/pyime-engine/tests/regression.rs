@@ -37,6 +37,8 @@ const CASES: &[(&str, &str, usize)] = &[
     ("zhuijia", "追加", 1),
     ("qinjixu", "请继续", 1),   // in=ing:精确的 亲继续 不应压过模糊的高频整句
     ("zaizhuijia", "再追加", 2), // 用户期望第 1:需 bigram 或学习一次
+    ("celue", "策略", 1),       // lue 写法:词库键为 lve
+    ("chelue", "策略", 3),      // 用户真实例子:c=ch 模糊 + lue
 ];
 
 #[test]

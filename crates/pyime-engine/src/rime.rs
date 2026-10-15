@@ -1,5 +1,6 @@
 //! 读取 Rime 的 `*.dict.yaml`(词⇥拼音⇥权重),导入 `DictBuilder`。
 use crate::dict::DictBuilder;
+use crate::pinyin::canonical;
 
 /// 缺省权重(如 others 词库没有权重列):低于任何显式权重 ≥1 的条目。
 const DEFAULT_WEIGHT: u32 = 0;
@@ -11,7 +12,7 @@ pub fn parse_line(line: &str) -> Option<(String, &str, u32)> {
     }
     let mut cols = line.split('\t');
     let (word, pinyin) = (cols.next()?, cols.next()?);
-    let syllables: Vec<&str> = pinyin.split_whitespace().collect();
+    let syllables: Vec<&str> = pinyin.split_whitespace().map(canonical).collect();
     let valid = !syllables.is_empty()
         && syllables.iter().all(|s| s.bytes().all(|b| b.is_ascii_lowercase()));
     if word.is_empty() || !valid {
@@ -65,5 +66,10 @@ mod tests {
         assert_eq!(import(text, &mut b), 2);
         let d = Dict::from_bytes(b.build().unwrap()).unwrap();
         assert_eq!(d.get("ni hao")[0].word, "你好");
+    }
+
+    #[test]
+    fn 词库里的_lue_键规范为_lve() {
+        assert_eq!(parse_line("略\tlue\t100"), Some(("lve".into(), "略", 100)));
     }
 }

@@ -1,6 +1,6 @@
 //! 模糊音:把"用户键入的音节"展开成"词典里可能的音节",每个变体带模糊次数。
 //! 规则两两成对且不传递(n=l、r=l 并存,但 n 与 r 不互通)。
-use crate::pinyin::{all, is_syllable};
+use crate::pinyin::{all, canonical, is_syllable};
 
 /// 声母对(用户键入 ↔ 词典)。
 const INITIALS: [(&str, &str); 5] = [("z", "zh"), ("c", "ch"), ("s", "sh"), ("n", "l"), ("r", "l")];
@@ -54,8 +54,9 @@ fn others<'a>(pairs: &[(&'a str, &'a str)], on: &[bool; 5], from: &str, shift: u
     out
 }
 
-/// 返回 `(词典音节, 模糊次数, 用到的规则位掩码)`;第一项恒为精确写法 `(s, 0, 0)`,其余只含合法音节。
+/// 返回 `(词典音节, 模糊次数, 用到的规则位掩码)`;第一项恒为规范化(`canonical`)后的精确写法 `(s, 0, 0)`,其余只含合法音节。
 pub fn variants(s: &str, cfg: &FuzzyConfig) -> Vec<(String, u8, u16)> {
+    let s = canonical(s);
     let (ini, fin) = split(s);
     let mut inis: Vec<(&str, u8, u16)> = vec![(ini, 0, 0)];
     inis.extend(others(&INITIALS, &cfg.initials, ini, 0).into_iter().map(|(x, m)| (x, 1, m)));
@@ -85,7 +86,12 @@ pub fn partial(rest: &str, cfg: &FuzzyConfig) -> Vec<(&'static str, u8, u16)> {
     for t in all() {
         let t_ini = split(t).0;
         if let Some(&(_, _, c, m)) = starts.iter().find(|(pre, i, _, _)| t.starts_with(pre.as_str()) && t_ini == *i) {
-            out.push((t, c, m));
+            let t = canonical(t);
+            match out.iter_mut().find(|(x, _, _)| *x == t) {
+                Some(e) if e.1 > c => *e = (t, c, m),
+                Some(_) => {}
+                None => out.push((t, c, m)),
+            }
         }
     }
     out
@@ -141,5 +147,13 @@ mod tests {
         assert!(got.contains(&("si", 0, 0)) && got.contains(&("shi", 1, 1 << 2)));
         let got = partial("sh", &FuzzyConfig::none());
         assert!(got.contains(&("shi", 0, 0)) && !got.iter().any(|(t, _, _)| *t == "si"));
+    }
+
+    #[test]
+    fn lue_nue_按规范写法展开_残缺前缀也映射() {
+        assert_eq!(variants("lue", &FuzzyConfig::none())[0], ("lve".to_string(), 0, 0));
+        assert!(variants("nue", &FuzzyConfig::default()).contains(&("lve".to_string(), 1, 1 << 3)));
+        let got = partial("lu", &FuzzyConfig::none());
+        assert!(got.contains(&("lve", 0, 0)) && !got.iter().any(|(t, _, _)| *t == "lue"));
     }
 }

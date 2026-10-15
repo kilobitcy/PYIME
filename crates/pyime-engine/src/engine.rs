@@ -489,4 +489,12 @@ mod tests {
         let w = c.iter().find(|c| c.text == "你好").unwrap();
         assert_eq!((w.consumed, w.cuts.as_slice()), (3, [2usize].as_slice()));
     }
+
+    #[test]
+    fn lue_与_lve_等价_残缺前缀也能召回() {
+        let e = engine(&[("ce lve", "策略", 1000), ("ce", "测", 500), ("lu", "路", 500)]);
+        assert_eq!(texts(&e, "celue")[0], "策略");
+        assert!(texts(&e, "chelue").contains(&"策略".to_string()));
+        assert!(texts(&e, "celu").contains(&"策略".to_string()));
+    }
 }
