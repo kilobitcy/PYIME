@@ -22,6 +22,9 @@ const VK_RBRACKET: i64 = 221;
 const VK_LEFT: i64 = 37;
 const VK_RIGHT: i64 = 39;
 /// 模拟按键发出后这段时间内,收到的同一方向键视为自己注入的回声,不改变状态。
+/// libIME 对同一次按键会先后调两次 filterKeyDown(OnTestKeyDown 与 OnKeyDown,后者防部分应用不触发前者),
+/// 间隔微秒级;自动连发的退格间隔 ≥ 30ms。窗口内的重复退格视为同一次按键。
+const BACK_DEDUP: Duration = Duration::from_millis(15);
 const INJECT_ECHO: Duration = Duration::from_millis(300);
 /// 候选横排,每页个数(与微信输入法一致)。
 const PAGE_SIZE: usize = 6;
@@ -91,11 +94,13 @@ pub struct Session {
     /// 最近一次自己注入方向键的时刻。
     injected: Option<Instant>,
     inject_echo: Duration,
+    /// 上一次计数的放行退格时刻(抬键后清空),用于合并 libIME 的重复调用。
+    back_counted: Option<Instant>,
 }
 
 impl Session {
     pub fn new(ime: Rc<Ime>) -> Session {
-        Session { ime, pending: String::new(), input: String::new(), cands: Vec::new(), typed_all: String::new(), context: String::new(), segments: 0, page: 0, cursor: 0, english: false, shift_pending: false, learned: Vec::new(), last: None, after_digit: false, quote_open: [false; 2], closers: Vec::new(), injected: None, inject_echo: INJECT_ECHO }
+        Session { ime, pending: String::new(), input: String::new(), cands: Vec::new(), typed_all: String::new(), context: String::new(), segments: 0, page: 0, cursor: 0, english: false, shift_pending: false, learned: Vec::new(), last: None, after_digit: false, quote_open: [false; 2], closers: Vec::new(), injected: None, inject_echo: INJECT_ECHO, back_counted: None }
     }
 
     fn composing(&self) -> bool {
@@ -157,6 +162,9 @@ impl Session {
             }
             "filterKeyUp" | "onKeyUp" => {
                 resp["return"] = json!(false);
+                if key == VK_BACK {
+                    self.back_counted = None;
+                }
                 if is_shift && std::mem::take(&mut self.shift_pending) && req["method"] == "filterKeyUp" {
                     self.toggle_english(&mut resp);
                 }
@@ -198,7 +206,8 @@ impl Session {
             self.closers.clear();
         }
         if key == VK_BACK {
-            if count_back {
+            if count_back && !self.back_counted.is_some_and(|t| t.elapsed() < BACK_DEDUP) {
+                self.back_counted = Some(Instant::now());
                 self.back_after_commit();
             }
         } else if !VK_SHIFT_KEYS.contains(&key) && !matches!(key, 17 | 18 | 65..=90) {
@@ -227,7 +236,12 @@ impl Session {
     /// 一次组词整句上屏:若是对刚被退格删掉的同一串拼音改选了别的词,撤回上次的学习;再记下这次。
     fn finish_commit(&mut self, typed: String, text: &str) {
         if let Some(prev) = self.last.take() {
-            if prev.backspaces > 0 && prev.typed == typed && prev.text != text {
+            // 与整串重选比较时不含末尾标点
+            let prev_text: String = {
+                let n = prev.text.chars().count() - prev.punct;
+                prev.text.chars().take(n).collect()
+            };
+            if prev.backspaces > 0 && prev.typed == typed && prev_text != text {
                 crate::inputlog::retract(&prev.learned);
                 for (t, w, pairs, ctx) in &prev.learned {
                     self.ime.unlearn(t, w, *pairs, ctx);
@@ -373,11 +387,11 @@ impl Session {
     }
 
     /// 输出标点(组字时先上屏高亮候选);成对符号注入方向键让光标回到中间或跳过右符号。
-    /// 同时上屏了组词时继续跟踪退格(标点计入删光阈值);成对符号会移动光标,不再跟踪。
+    /// 同时上屏了组词时继续跟踪退格(标点计入删光阈值);注入了方向键(成对符号、跳过右符号)时光标已移动,不再跟踪。
     fn punctuate(&mut self, m: Mapped, was_digit: bool) -> Option<String> {
         let mut out = self.commit_all();
         let committed = out.chars().count();
-        let keep = committed > 0 && !matches!(m, Mapped::Open { .. });
+        let mut moved = false;
         match m {
             Mapped::Fixed(c) => out.push(c),
             Mapped::Number { half, full } => out.push(if was_digit && out.is_empty() { half } else { full }),
@@ -392,13 +406,16 @@ impl Session {
                 out.push(close);
                 self.closers.push(close);
                 self.inject(VK_LEFT);
+                moved = true;
             }
             Mapped::Close(c) if self.closers.last() == Some(&c) => {
                 self.closers.pop();
                 self.inject(VK_RIGHT);
+                moved = true;
             }
             Mapped::Close(c) => out.push(c),
         }
+        let keep = committed > 0 && !moved;
         if !keep {
             self.last = None;
         } else if let Some(l) = &mut self.last {

@@ -44,6 +44,7 @@ fn type_pick(s: &mut Session, codes: &[i64], word: &str) -> Value {
 fn backs(s: &mut Session, n: usize) {
     for _ in 0..n {
         key(s, "filterKeyDown", VK_BACK);
+        key(s, "filterKeyUp", VK_BACK);
     }
 }
 
@@ -270,12 +271,60 @@ fn 退格删光两字词即撤回_只删一字不撤回() {
 }
 
 #[test]
-fn 同一次退格的_onkeydown_不重复计数() {
+fn 同一次退格的两次_filterkeydown_只计一次() {
     let mut s = session();
     type_pick(&mut s, &[N, I, H, A, O], "你好");
+    // libIME 对同一次按键会调两次 filterKeyDown(OnTestKeyDown 与 OnKeyDown),中间不抬键
     key(&mut s, "filterKeyDown", VK_BACK);
-    key(&mut s, "onKeyDown", VK_BACK);
+    key(&mut s, "filterKeyDown", VK_BACK);
+    key(&mut s, "filterKeyUp", VK_BACK);
     assert!(s.ime.user_export().contains("nihao\t你好\t1"));
+    backs(&mut s, 1);
+    assert!(!s.ime.user_export().contains("nihao\t你好"), "{}", s.ime.user_export());
+}
+
+#[test]
+fn 跳过右括号上屏后不跟踪退格() {
+    let mut s = session();
+    assert_eq!(commit(&pk(&mut s, 188, true)), "\u{300A}\u{300B}");
+    press(&mut s, &[N, I]);
+    let r = pk(&mut s, 190, true); // 跳过》,上屏"你"
+    assert_eq!(commit(&r), "你");
+    backs(&mut s, 1);
+    assert!(s.ime.user_export().contains("ni\t你\t1"), "{}", s.ime.user_export());
+}
+
+#[test]
+fn 标点上屏后删到词内再整串重选同一个词_不撤回() {
+    let mut s = session();
+    press(&mut s, &[N, I, H, A, O]);
+    let r = pk(&mut s, 188, false);
+    assert_eq!(commit(&r), "你好\u{FF0C}");
+    backs(&mut s, 2); // 删掉逗号和"好",未删光
+    type_pick(&mut s, &[N, I, H, A, O], "你好");
+    assert!(s.ime.user_export().contains("nihao\t你好\t2"), "{}", s.ime.user_export());
+}
+
+#[test]
+fn 部分删除时上文同步回退() {
+    let mut s = session();
+    type_pick(&mut s, &[N, I, H, A, O], "你好");
+    backs(&mut s, 1);
+    type_pick(&mut s, &[N, I], "你");
+    let e = s.ime.user_export();
+    assert!(e.contains("@ng\t你\t你\t1"), "{e}");
+    assert!(!e.contains("@ng\t好\t你"), "{e}");
+}
+
+#[test]
+fn 只删标点时上文不回退() {
+    let mut s = session();
+    press(&mut s, &[N, I]);
+    pk(&mut s, 188, false);
+    backs(&mut s, 1);
+    type_pick(&mut s, &[N, I], "你");
+    let e = s.ime.user_export();
+    assert!(e.contains("@ng\t你\t你\t1"), "{e}");
 }
 
 #[test]
