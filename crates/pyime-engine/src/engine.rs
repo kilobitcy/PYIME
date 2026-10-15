@@ -125,6 +125,11 @@ impl Engine {
         }
     }
 
+    /// 删除词 `text` 的全部个人学习(词库不受影响)。
+    pub fn forget(&mut self, text: &str) {
+        self.user.forget(text);
+    }
+
     /// 在上文 `prev` 之后上屏了 `text`,记下个人搭配。
     pub fn learn_next(&mut self, prev: &str, text: &str) {
         self.user.learn_next(prev, text);
@@ -496,5 +501,14 @@ mod tests {
         assert_eq!(texts(&e, "celue")[0], "策略");
         assert!(texts(&e, "chelue").contains(&"策略".to_string()));
         assert!(texts(&e, "celu").contains(&"策略".to_string()));
+    }
+
+    #[test]
+    fn forget_后恢复词库排序() {
+        let mut e = engine(&[("ni", "你", 1000), ("ni", "泥", 10)]);
+        e.learn("ni", "泥");
+        assert_eq!(texts(&e, "ni")[0], "泥");
+        e.forget("泥");
+        assert_eq!(texts(&e, "ni"), ["你", "泥"]);
     }
 }

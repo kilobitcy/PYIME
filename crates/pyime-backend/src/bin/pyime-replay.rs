@@ -39,6 +39,10 @@ fn main() -> Result<(), String> {
             }
             continue;
         }
+        if let Some(w) = v["forget"].as_str() {
+            engine.forget(w);
+            continue;
+        }
         let (Some(input), Some(typed), Some(chosen)) = (v["input"].as_str(), v["typed"].as_str(), v["text"].as_str()) else { continue };
         let ctx = v["context"].as_str().unwrap_or("");
         let cands = engine.candidates_after(input, ctx);

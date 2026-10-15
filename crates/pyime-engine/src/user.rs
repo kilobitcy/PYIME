@@ -59,6 +59,13 @@ impl UserModel {
         }
     }
 
+    /// 删除 `word` 的全部个人学习:各拼音下的精确层、词层,以及以它为后继的搭配。词库不受影响。
+    pub fn forget(&mut self, word: &str) {
+        self.pairs.retain(|(_, w), _| w != word);
+        self.words.remove(word);
+        self.next.retain(|(_, w), _| w != word);
+    }
+
     /// 记一次搭配:`prev` 是光标前已有的文字,其后上屏了 `word`。上文末尾 1–3 个字各记一条。
     pub fn learn_next(&mut self, prev: &str, word: &str) {
         let chars: Vec<char> = prev.chars().collect();
@@ -245,5 +252,21 @@ mod tests {
         let back = UserModel::import(&m.export());
         assert_eq!(back.bonus("ni", "你"), m.bonus("ni", "你"));
         assert_eq!(UserModel::import("坏行\n").export(), "");
+    }
+
+    #[test]
+    fn forget_删除该词全部学习_不影响其他词() {
+        let mut m = UserModel::default();
+        m.learn("qinjixu", "亲继续");
+        m.learn("qjx", "亲继续");
+        m.learn("qin", "请");
+        m.learn_next("是", "亲继续");
+        m.learn_next("是", "请");
+        m.forget("亲继续");
+        assert_eq!(m.bonus("qinjixu", "亲继续"), 0.0);
+        assert_eq!(m.bonus("qjx", "亲继续"), 0.0);
+        assert!(!m.knows("亲继续"));
+        assert_eq!(m.collocation("是", "亲继续"), 0.0);
+        assert!(m.bonus("qin", "请") > 0.0 && m.collocation("是", "请") > 0.0);
     }
 }
