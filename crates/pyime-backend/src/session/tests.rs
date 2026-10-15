@@ -529,3 +529,59 @@ fn 整句分隔符和没打完的尾部() {
     let r = press(&mut s, &[68, 69, 68, 65, 79, 90, 72, 69]); // dedaozhe
     assert_eq!(r["compositionString"], "de'dao'zhe");
 }
+
+/// 取出本测试线程至今写出的 cancel 行的拼音(同时清空捕获列表)。
+fn cancels() -> Vec<String> {
+    crate::inputlog::take_captured().into_iter().filter_map(|l| l["cancel"].as_str().map(String::from)).collect()
+}
+
+#[test]
+fn esc放弃组字记一次cancel() {
+    let mut s = session();
+    cancels();
+    press(&mut s, &[N, I, H, A, O]);
+    press(&mut s, &[VK_ESCAPE]);
+    let lines: Vec<Value> = crate::inputlog::take_captured().into_iter().filter(|l| l["cancel"].is_string()).collect();
+    assert_eq!(lines.len(), 1);
+    assert_eq!(lines[0]["cancel"], "nihao");
+    assert_eq!(lines[0]["top"][0], "你好");
+}
+
+#[test]
+fn 退格删光拼音记最长的串() {
+    let mut s = session();
+    cancels();
+    press(&mut s, &[N, I, H, A, O]);
+    press(&mut s, &[VK_BACK, VK_BACK, VK_BACK, VK_BACK, VK_BACK]);
+    assert_eq!(cancels(), ["nihao"]);
+}
+
+#[test]
+fn 部分选词后esc也记cancel() {
+    let mut s = session();
+    cancels();
+    type_pick(&mut s, &[N, I, H, A, O], "你");
+    press(&mut s, &[VK_ESCAPE]);
+    assert_eq!(cancels(), ["nihao"]);
+}
+
+#[test]
+fn 回车与shift切英文不记cancel() {
+    let mut s = session();
+    cancels();
+    press(&mut s, &[N, I]);
+    press(&mut s, &[VK_RETURN]);
+    press(&mut s, &[W, O]);
+    shift_click(&mut s);
+    assert!(cancels().is_empty());
+}
+
+#[test]
+fn 上屏后新组字的cancel记新串() {
+    let mut s = session();
+    cancels();
+    type_pick(&mut s, &[N, I], "你");
+    press(&mut s, &[W, O]);
+    press(&mut s, &[VK_ESCAPE]);
+    assert_eq!(cancels(), ["wo"]);
+}

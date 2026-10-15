@@ -96,11 +96,13 @@ pub struct Session {
     inject_echo: Duration,
     /// 上一次计数的放行退格时刻(抬键后清空),用于合并 libIME 的重复调用。
     back_counted: Option<Instant>,
+    /// 本次组字中最长的拼音及其当时的候选前几名;放弃组字时写入日志。
+    peak: Option<(String, Vec<String>)>,
 }
 
 impl Session {
     pub fn new(ime: Rc<Ime>) -> Session {
-        Session { ime, pending: String::new(), input: String::new(), cands: Vec::new(), typed_all: String::new(), context: String::new(), segments: 0, page: 0, cursor: 0, english: false, shift_pending: false, learned: Vec::new(), last: None, after_digit: false, quote_open: [false; 2], closers: Vec::new(), injected: None, inject_echo: INJECT_ECHO, back_counted: None }
+        Session { ime, pending: String::new(), input: String::new(), cands: Vec::new(), typed_all: String::new(), context: String::new(), segments: 0, page: 0, cursor: 0, english: false, shift_pending: false, learned: Vec::new(), last: None, after_digit: false, quote_open: [false; 2], closers: Vec::new(), injected: None, inject_echo: INJECT_ECHO, back_counted: None, peak: None }
     }
 
     fn composing(&self) -> bool {
@@ -272,6 +274,17 @@ impl Session {
         self.cands = if self.input.is_empty() { Vec::new() } else { self.ime.candidates(&self.input, &self.prev()) };
         self.page = 0;
         self.cursor = 0;
+        if self.peak.as_ref().map_or(0, |p| p.0.len()) < self.input.len() {
+            let top = self.cands.iter().take(crate::inputlog::TOP).map(|c| c.text.clone()).collect();
+            self.peak = Some((self.input.clone(), top));
+        }
+    }
+
+    /// 放弃组字(Esc,或退格删光且无上屏):把本次最长的拼音记为一次放弃。
+    fn log_cancel(&mut self) {
+        if let Some((input, top)) = self.peak.take() {
+            crate::inputlog::cancel(&input, &top);
+        }
     }
 
     /// 删除页内第 `idx` 个候选的个人学习,保持输入并刷新候选(页码仍有效则留在当前页)。
@@ -301,6 +314,7 @@ impl Session {
         self.segments += 1;
         if self.input.is_empty() {
             self.cands.clear();
+            self.peak = None;
             let text = std::mem::take(&mut self.pending);
             if self.segments > 1 {
                 self.ime.learn(&self.typed_all, &text, 0, ""); // 分段选完的整句也学
@@ -348,6 +362,7 @@ impl Session {
         self.last = None;
         self.segments = 0;
         self.context.clear();
+        self.peak = None;
         text
     }
 
@@ -434,6 +449,7 @@ impl Session {
             VK_SPACE => commit = self.select(self.cursor),
             VK_RETURN => commit = Some(self.flush_raw()),
             VK_ESCAPE => {
+                self.log_cancel();
                 self.flush_raw();
             }
             VK_UP => self.move_cursor(false),
@@ -443,6 +459,9 @@ impl Session {
             VK_BACK => {
                 self.input.pop();
                 if self.input.is_empty() {
+                    if self.pending.is_empty() {
+                        self.log_cancel();
+                    }
                     commit = Some(self.flush_raw()).filter(|t| !t.is_empty());
                 } else {
                     self.refresh();
