@@ -111,8 +111,8 @@ impl Session {
         self.cands.len().div_ceil(PAGE_SIZE)
     }
 
-    /// 该键是否由输入法接管(拼音串存在时,编辑/翻页/数字键也接管)。
-    fn wants_key(&self, key: i64, shift_down: bool) -> bool {
+    /// 该键是否由输入法接管(拼音串存在时,编辑/翻页/数字键也接管;Ctrl+数字不选词,Ctrl+Shift+数字删除学习)。
+    fn wants_key(&self, key: i64, shift_down: bool, ctrl_down: bool) -> bool {
         if self.english {
             return false;
         }
@@ -123,7 +123,7 @@ impl Session {
             key,
             VK_BACK | VK_RETURN | VK_ESCAPE | VK_SPACE | VK_UP | VK_DOWN | VK_PRIOR | VK_NEXT
                 | VK_EQUALS | VK_MINUS | VK_LBRACKET | VK_RBRACKET
-        ) || digit_index(key).is_some_and(|i| i < self.page_items().len());
+        ) || digit_index(key).is_some_and(|i| i < self.page_items().len() && (!ctrl_down || shift_down));
         editing && self.composing()
     }
 
@@ -138,20 +138,21 @@ impl Session {
     pub fn handle(&mut self, req: &Value) -> Value {
         let key = req["keyCode"].as_i64().unwrap_or(0);
         let shift_down = req["keyStates"][16].as_u64().unwrap_or(0) & 0x80 != 0;
+        let ctrl_down = req["keyStates"][17].as_u64().unwrap_or(0) & 0x80 != 0;
         let mut resp = json!({ "success": true, "seqNum": req["seqNum"] });
         let is_shift = VK_SHIFT_KEYS.contains(&key);
         match req["method"].as_str().unwrap_or("") {
             m @ ("filterKeyDown" | "onKeyDown") => {
                 self.shift_pending = is_shift;
                 let mapped = self.punct_for(req, key);
-                let wants = mapped.is_some() || self.wants_key(key, shift_down);
+                let wants = mapped.is_some() || self.wants_key(key, shift_down, ctrl_down);
                 if !wants {
                     // 同一次按键可能先后以 filterKeyDown、onKeyDown 到达,退格只在前者计数
                     self.note_passthrough(key, shift_down, m == "filterKeyDown");
                 }
                 resp["return"] = json!(wants);
                 if wants && m == "onKeyDown" {
-                    self.on_key_down(key, mapped, &mut resp);
+                    self.on_key_down(key, mapped, ctrl_down, &mut resp);
                 }
             }
             "filterKeyUp" | "onKeyUp" => {
@@ -257,6 +258,18 @@ impl Session {
         self.cands = if self.input.is_empty() { Vec::new() } else { self.ime.candidates(&self.input, &self.prev()) };
         self.page = 0;
         self.cursor = 0;
+    }
+
+    /// 删除页内第 `idx` 个候选的个人学习,保持输入并刷新候选(页码仍有效则留在当前页)。
+    fn forget(&mut self, idx: usize) {
+        let Some(text) = self.page_items().get(idx).map(|c| c.text.clone()) else { return };
+        let before: Vec<String> = self.cands.iter().map(|c| c.text.clone()).collect();
+        self.ime.forget(&text);
+        let page = self.page;
+        self.refresh();
+        self.page = page.min(self.page_count().saturating_sub(1));
+        let noop = self.cands.iter().map(|c| &c.text).eq(before.iter());
+        crate::inputlog::forget(&self.input, &text, noop);
     }
 
     /// 选中页内第 `idx` 个候选;输入耗尽时返回应上屏的文字。
@@ -395,7 +408,7 @@ impl Session {
         Some(out)
     }
 
-    fn on_key_down(&mut self, key: i64, mapped: Option<Mapped>, resp: &mut Value) {
+    fn on_key_down(&mut self, key: i64, mapped: Option<Mapped>, ctrl_down: bool, resp: &mut Value) {
         let was_digit = std::mem::take(&mut self.after_digit);
         let mut commit: Option<String> = None;
         match key {
@@ -418,6 +431,7 @@ impl Session {
                     self.refresh();
                 }
             }
+            _ if ctrl_down && digit_index(key).is_some() => self.forget(digit_index(key).unwrap()),
             _ if digit_index(key).is_some() => commit = self.select(digit_index(key).unwrap()),
             _ => {
                 self.input.push((key as u8 as char).to_ascii_lowercase());

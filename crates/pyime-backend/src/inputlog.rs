@@ -47,3 +47,13 @@ pub fn retract(items: &[(String, String, u16, String)]) {
         let _ = writeln!(f, "{line}");
     }
 }
+
+/// 用户删除了某候选的个人学习:`input` 为当时的拼音串,`noop` 表示删除后候选顺序没有变化。
+pub fn forget(input: &str, text: &str, noop: bool) {
+    let Some(file) = FILE.get() else { return };
+    let ms = SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |d| d.as_millis() as u64);
+    let line = json!({ "ts": ms, "forget": text, "input": input, "noop": noop });
+    if let Ok(mut f) = file.lock() {
+        let _ = writeln!(f, "{line}");
+    }
+}

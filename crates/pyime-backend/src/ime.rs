@@ -140,6 +140,13 @@ impl Ime {
         self.save(&engine);
     }
 
+    /// 删除词 `text` 的全部个人学习并存盘。
+    pub fn forget(&self, text: &str) {
+        let mut engine = self.engine.borrow_mut();
+        engine.forget(text);
+        self.save(&engine);
+    }
+
     fn save(&self, engine: &Engine) {
         let Some(path) = &self.user_path else { return };
         if let Some(dir) = path.parent() {

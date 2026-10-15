@@ -313,6 +313,43 @@ fn pk(s: &mut Session, code: i64, shift: bool) -> Value {
     s.handle(&json!({"method": "onKeyDown", "seqNum": 1, "keyCode": code, "keyStates": ks}))
 }
 
+fn pkc(s: &mut Session, method: &str, code: i64, shift: bool, ctrl: bool) -> Value {
+    let mut ks = vec![0; 256];
+    ks[16] = if shift { 0x80 } else { 0 };
+    ks[17] = if ctrl { 0x80 } else { 0 };
+    s.handle(&json!({"method": method, "seqNum": 1, "keyCode": code, "keyStates": ks}))
+}
+
+#[test]
+fn 组字中ctrl_shift_数字删除该候选的学习() {
+    let mut s = session();
+    type_pick(&mut s, &[N, I], "泥");
+    let r = press(&mut s, &[N, I]);
+    assert_eq!(r["candidateList"][0], "泥");
+    let r = pkc(&mut s, "onKeyDown", 49, true, true);
+    assert_eq!(r["return"], true);
+    assert_eq!(commit(&r), "");
+    assert!(s.composing());
+    assert_eq!(r["candidateList"][0], "你");
+    assert!(!s.ime.user_export().contains("泥"), "{}", s.ime.user_export());
+}
+
+#[test]
+fn 非组字时ctrl_shift_数字放行() {
+    let mut s = session();
+    assert_eq!(pkc(&mut s, "filterKeyDown", 49, true, true)["return"], false);
+}
+
+#[test]
+fn 组字中ctrl_数字不选词() {
+    let mut s = session();
+    press(&mut s, &[N, I]);
+    let r = pkc(&mut s, "onKeyDown", 50, false, true);
+    assert_eq!(r["return"], false);
+    assert!(s.composing());
+    assert!(!s.ime.user_export().contains("ni\t"));
+}
+
 fn commit(v: &Value) -> &str {
     v["commitString"].as_str().unwrap_or("")
 }
