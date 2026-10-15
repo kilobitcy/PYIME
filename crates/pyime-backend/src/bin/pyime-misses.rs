@@ -20,8 +20,10 @@ struct Group {
     context: String,
     /// 首段时刻(毫秒)。
     ts: u64,
-    /// 误选组或已作为纠错期望,不再计入 ② ③。
-    skip: bool,
+    /// 被撤回的误选组,不再计入 ② ③。
+    wrong: bool,
+    /// 已作为纠错期望累加过,记下该用例的 (拼音, 期望);不再计入 ② ③,被撤回时用来回收该用例。
+    used: Option<(String, String)>,
 }
 
 impl Group {
@@ -62,6 +64,16 @@ impl Report {
             c.count += 1;
         } else {
             self.cases.push(Case { kind, input: input.to_string(), expect: expect.to_string(), note, count: 1 });
+        }
+    }
+
+    /// 回收一次纠错用例的计数(该期望随后又被撤回),减到 0 则移除。
+    fn retract_case(&mut self, input: &str, expect: &str) {
+        if let Some(p) = self.cases.iter().position(|c| c.kind == 1 && c.input == input && c.expect == expect) {
+            self.cases[p].count -= 1;
+            if self.cases[p].count == 0 {
+                self.cases.remove(p);
+            }
         }
     }
 }
@@ -123,7 +135,8 @@ fn parse(lines: &[Value], report: &mut Report) -> (Vec<Group>, Vec<Event>) {
                     segs: 1,
                     context: str_of(&v["context"]),
                     ts,
-                    skip: false,
+                    wrong: false,
+                    used: None,
                 });
                 events.push(Event::Group(groups.len() - 1));
                 groups.len() - 1
@@ -137,12 +150,20 @@ fn parse(lines: &[Value], report: &mut Report) -> (Vec<Group>, Vec<Event>) {
 /// 撤回 (r, w):向前找误选组,再把其后的上屏(撤回后的只算 60 秒内)按序累加,
 /// 拼音恰好凑成 r 时累加文字即期望;凑不上则列入疑似清单。
 fn retract(report: &mut Report, groups: &mut [Group], events: &[Event], i: usize, r: &str, w: &str, ts: u64) {
-    let found = (0..i).rev().find_map(|j| match events[j] {
-        Event::Group(g) if !groups[g].skip && groups[g].typed == r && groups[g].text == w => Some((j, g)),
-        _ => None,
-    });
+    // 后端的撤回只针对最近一次上屏;整串重选时误选组是倒数第二个,故只看最近 2 个组
+    let found = (0..i)
+        .rev()
+        .filter_map(|j| match events[j] {
+            Event::Group(g) => Some((j, g)),
+            _ => None,
+        })
+        .take(2)
+        .find(|&(_, g)| !groups[g].wrong && groups[g].typed == r && groups[g].text == w);
     let Some((pos, wrong)) = found else { return };
-    groups[wrong].skip = true;
+    groups[wrong].wrong = true;
+    if let Some((r0, e0)) = groups[wrong].used.take() {
+        report.retract_case(&r0, &e0);
+    }
     let (mut typed, mut text, mut used) = (String::new(), String::new(), Vec::new());
     let mut first: Option<usize> = None;
     for (j, e) in events.iter().enumerate().skip(pos + 1) {
@@ -160,7 +181,7 @@ fn retract(report: &mut Report, groups: &mut [Group], events: &[Event], i: usize
         if typed == r {
             if text != w {
                 for g in used {
-                    groups[g].skip = true;
+                    groups[g].used = Some((r.to_string(), text.clone()));
                 }
                 report.add(1, r, &text, format!("误选 {w}"));
             }
@@ -206,7 +227,7 @@ fn analyze(lines: &[Value]) -> Report {
             Event::Group(_) => {}
         }
     }
-    for g in groups.iter().filter(|g| !g.skip && g.complete()) {
+    for g in groups.iter().filter(|g| !g.wrong && g.used.is_none() && g.complete()) {
         if g.segs > 1 && g.first_top.as_deref() != Some(g.text.as_str()) {
             report.add(2, &g.typed, &g.text, format!("{} 段", g.segs));
         } else if g.segs == 1 && g.first_index > 0 {
@@ -433,5 +454,31 @@ mod tests {
         assert!(out.contains("== ① 纠错 ==\n    (无)\n"), "{out}");
         assert!(out.contains("    (\"zai\", \"在\", 1), // ×1 上文: \n"), "{out}");
         assert!(out.contains("== 疑似找不到 ==\n    (无)\n"), "{out}");
+    }
+
+    #[test]
+    fn 连续两次整串重选_以最后一次为准() {
+        let r = analyze(&[
+            sel("nihao", "nihao", "你号", 0, &["你号", "泥好", "你好"], 1000),
+            sel("nihao", "nihao", "泥好", 1, &["你号", "泥好", "你好"], 2000),
+            ret(&[("nihao", "你号")], 2000),
+            sel("nihao", "nihao", "你好", 2, &["你号", "泥好", "你好"], 3000),
+            ret(&[("nihao", "泥好")], 3000),
+        ]);
+        assert_eq!(cases(&r), [(1, "nihao", "你好", 1)]);
+        assert_eq!(r.cases[0].note, "误选 泥好");
+        assert!(r.suspects.is_empty());
+    }
+
+    #[test]
+    fn 撤回只匹配最近的上屏_不回溯旧组() {
+        let r = analyze(&[
+            sel("nihao", "nihao", "你号", 0, &["你号"], 1000),
+            sel("wo", "wo", "我", 0, &["我"], 2000),
+            sel("zai", "zai", "在", 0, &["在"], 3000),
+            ret(&[("nihao", "你号")], 4000),
+        ]);
+        assert!(r.cases.is_empty());
+        assert!(r.suspects.is_empty());
     }
 }
