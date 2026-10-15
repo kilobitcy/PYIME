@@ -399,6 +399,24 @@ fn 组字中ctrl_数字不选词() {
     assert!(!s.ime.user_export().contains("ni\t"));
 }
 
+#[test]
+fn 未组字时ctrl字母放行给应用() {
+    let mut s = session();
+    for k in [65, 67, 86, 88, 90] {
+        assert_eq!(pkc(&mut s, "filterKeyDown", k, false, true)["return"], false, "Ctrl+{k}");
+    }
+    assert!(!s.composing());
+}
+
+#[test]
+fn 组字中ctrl字母放行且不改拼音() {
+    let mut s = session();
+    press(&mut s, &[N, I]);
+    assert_eq!(pkc(&mut s, "filterKeyDown", 86, false, true)["return"], false);
+    assert_eq!(pkc(&mut s, "onKeyDown", 86, false, true)["return"], false);
+    assert_eq!(s.input, "ni");
+}
+
 fn commit(v: &Value) -> &str {
     v["commitString"].as_str().unwrap_or("")
 }

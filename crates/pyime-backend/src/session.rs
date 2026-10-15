@@ -124,7 +124,8 @@ impl Session {
             return false;
         }
         if (65..=90).contains(&key) {
-            return self.composing() || !shift_down; // 未组词时 Shift+字母是大写,放行
+            // Ctrl+字母是应用快捷键(复制、粘贴等),一律放行;未组词时 Shift+字母是大写,放行
+            return !ctrl_down && (self.composing() || !shift_down);
         }
         let editing = matches!(
             key,
