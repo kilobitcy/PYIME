@@ -47,13 +47,17 @@ fn tail3(s: &str) -> String {
 /// 一次学习:(键入拼音, 词, 用到的模糊规则, 上文)。
 type Learned = (String, String, u16, String);
 
-/// 刚上屏的一次组词:记下它做过的学习,若随后被退格删掉、对同一串拼音改选别的词,就把这些学习撤回。
+/// 刚上屏的一次组词:记下它做过的学习。随后放行的退格删光它(含随之上屏的标点),
+/// 或删过之后对同一串拼音改选了别的词,就把这些学习撤回。
 struct Last {
     learned: Vec<Learned>,
     typed: String,
+    /// 上屏的全部文字(组词结果 + 随后一起上屏的标点)。
     text: String,
-    /// 上屏后在非组词态按过退格。
-    backspaced: bool,
+    /// `text` 末尾的标点字符数;标点不在上文 `context` 里,删它时不回退上文。
+    punct: usize,
+    /// 上屏后放行的退格次数。
+    backspaces: usize,
 }
 
 pub struct Session {
@@ -142,7 +146,8 @@ impl Session {
                 let mapped = self.punct_for(req, key);
                 let wants = mapped.is_some() || self.wants_key(key, shift_down);
                 if !wants {
-                    self.note_passthrough(key, shift_down);
+                    // 同一次按键可能先后以 filterKeyDown、onKeyDown 到达,退格只在前者计数
+                    self.note_passthrough(key, shift_down, m == "filterKeyDown");
                 }
                 resp["return"] = json!(wants);
                 if wants && m == "onKeyDown" {
@@ -178,8 +183,8 @@ impl Session {
     }
 
     /// 应用收到的按键(输入法未接管)对"刚上屏"状态的影响:退格记为可能在撤销,
-    /// Shift/Ctrl/Alt 与字母不影响,其他键说明用户接受了上屏结果。
-    fn note_passthrough(&mut self, key: i64, shift_down: bool) {
+    /// Shift/Ctrl/Alt 与字母不影响,其他键说明用户接受了上屏结果。`count_back` 为假时退格不计数。
+    fn note_passthrough(&mut self, key: i64, shift_down: bool, count_back: bool) {
         if matches!(key, VK_LEFT | VK_RIGHT) && self.injected.is_some_and(|t| t.elapsed() < self.inject_echo) {
             return;
         }
@@ -192,25 +197,43 @@ impl Session {
             self.closers.clear();
         }
         if key == VK_BACK {
-            if let Some(l) = &mut self.last {
-                l.backspaced = true;
+            if count_back {
+                self.back_after_commit();
             }
         } else if !VK_SHIFT_KEYS.contains(&key) && !matches!(key, 17 | 18 | 65..=90) {
             self.last = None;
         }
     }
 
+    /// 放行的一次退格:删到组词文字时同步回退上文;删光整次上屏则撤回其全部学习并清空上文。
+    fn back_after_commit(&mut self) {
+        let Some(l) = &mut self.last else { return };
+        l.backspaces += 1;
+        if l.backspaces > l.punct {
+            self.context.pop();
+        }
+        if l.backspaces < l.text.chars().count() {
+            return;
+        }
+        let Some(l) = self.last.take() else { return };
+        crate::inputlog::retract(&l.learned);
+        for (t, w, pairs, ctx) in &l.learned {
+            self.ime.unlearn(t, w, *pairs, ctx);
+        }
+        self.context.clear();
+    }
+
     /// 一次组词整句上屏:若是对刚被退格删掉的同一串拼音改选了别的词,撤回上次的学习;再记下这次。
     fn finish_commit(&mut self, typed: String, text: &str) {
         if let Some(prev) = self.last.take() {
-            if prev.backspaced && prev.typed == typed && prev.text != text {
+            if prev.backspaces > 0 && prev.typed == typed && prev.text != text {
                 crate::inputlog::retract(&prev.learned);
                 for (t, w, pairs, ctx) in &prev.learned {
                     self.ime.unlearn(t, w, *pairs, ctx);
                 }
             }
         }
-        self.last = Some(Last { learned: std::mem::take(&mut self.learned), typed, text: text.to_string(), backspaced: false });
+        self.last = Some(Last { learned: std::mem::take(&mut self.learned), typed, text: text.to_string(), punct: 0, backspaces: 0 });
     }
 
     /// 组字串里未转换的拼音:按当前高亮候选的切分加 `'`(`de'dao'zhe`),没有候选时原样。
@@ -337,9 +360,11 @@ impl Session {
     }
 
     /// 输出标点(组字时先上屏高亮候选);成对符号注入方向键让光标回到中间或跳过右符号。
+    /// 同时上屏了组词时继续跟踪退格(标点计入删光阈值);成对符号会移动光标,不再跟踪。
     fn punctuate(&mut self, m: Mapped, was_digit: bool) -> Option<String> {
         let mut out = self.commit_all();
-        self.last = None;
+        let committed = out.chars().count();
+        let keep = committed > 0 && !matches!(m, Mapped::Open { .. });
         match m {
             Mapped::Fixed(c) => out.push(c),
             Mapped::Number { half, full } => out.push(if was_digit && out.is_empty() { half } else { full }),
@@ -360,6 +385,12 @@ impl Session {
                 self.inject(VK_RIGHT);
             }
             Mapped::Close(c) => out.push(c),
+        }
+        if !keep {
+            self.last = None;
+        } else if let Some(l) = &mut self.last {
+            l.punct = out.chars().count() - committed;
+            l.text = out.clone();
         }
         Some(out)
     }

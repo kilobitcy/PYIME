@@ -34,6 +34,19 @@ fn press(s: &mut Session, codes: &[i64]) -> Value {
     last
 }
 
+/// 键入拼音后按数字键选中文字为 `word` 的候选。
+fn type_pick(s: &mut Session, codes: &[i64], word: &str) -> Value {
+    let r = press(s, codes);
+    let pos = r["candidateList"].as_array().unwrap().iter().position(|c| c == word).unwrap();
+    key(s, "onKeyDown", 49 + pos as i64)
+}
+
+fn backs(s: &mut Session, n: usize) {
+    for _ in 0..n {
+        key(s, "filterKeyDown", VK_BACK);
+    }
+}
+
 #[test]
 fn 字母键被接管并出候选() {
     let mut s = session();
@@ -226,26 +239,72 @@ fn 没按退格再选别的词_不撤回() {
 }
 
 #[test]
-fn 退格后重选同一个词_不撤回() {
+fn 退格删光后重选同一个词_计数不累加() {
     let mut s = session();
     press(&mut s, &[N, I]);
     press(&mut s, &[32]);
-    key(&mut s, "filterKeyDown", VK_BACK);
+    backs(&mut s, 1); // 单字"你"已删光,学习撤回
     press(&mut s, &[N, I]);
     press(&mut s, &[32]);
-    assert!(s.ime.user_export().contains("ni\t你\t2"));
+    assert!(s.ime.user_export().contains("ni\t你\t1"));
 }
 
 #[test]
-fn 退格后又按了别的键_不再视为撤销() {
+fn 退格中途按了别的键_不再视为撤销() {
+    let mut s = session();
+    type_pick(&mut s, &[N, I, H, A, O], "你好");
+    backs(&mut s, 1);
+    key(&mut s, "filterKeyDown", 37); // 左方向键
+    backs(&mut s, 1);
+    assert!(s.ime.user_export().contains("nihao\t你好\t1"));
+}
+
+#[test]
+fn 退格删光两字词即撤回_只删一字不撤回() {
+    let mut s = session();
+    type_pick(&mut s, &[N, I, H, A, O], "你好");
+    backs(&mut s, 1);
+    assert!(s.ime.user_export().contains("nihao\t你好\t1"));
+    backs(&mut s, 1);
+    assert!(!s.ime.user_export().contains("nihao\t你好"), "{}", s.ime.user_export());
+}
+
+#[test]
+fn 同一次退格的_onkeydown_不重复计数() {
+    let mut s = session();
+    type_pick(&mut s, &[N, I, H, A, O], "你好");
+    key(&mut s, "filterKeyDown", VK_BACK);
+    key(&mut s, "onKeyDown", VK_BACK);
+    assert!(s.ime.user_export().contains("nihao\t你好\t1"));
+}
+
+#[test]
+fn 带标点上屏后连标点一起删光才撤回() {
     let mut s = session();
     press(&mut s, &[N, I]);
-    press(&mut s, &[32]);
-    key(&mut s, "filterKeyDown", VK_BACK);
-    key(&mut s, "filterKeyDown", 37); // 左方向键
-    press(&mut s, &[N, I]);
-    press(&mut s, &[50]);
+    assert_eq!(commit(&pk(&mut s, 188, false)), "你\u{FF0C}");
+    backs(&mut s, 1); // 只删了逗号
     assert!(s.ime.user_export().contains("ni\t你\t1"));
+    backs(&mut s, 1);
+    assert!(!s.ime.user_export().contains("ni\t你"));
+}
+
+#[test]
+fn 成对符号上屏后不跟踪退格() {
+    let mut s = session();
+    press(&mut s, &[N, I]);
+    assert_eq!(commit(&pk(&mut s, 188, true)), "你\u{300A}\u{300B}");
+    backs(&mut s, 3);
+    assert!(s.ime.user_export().contains("ni\t你\t1"));
+}
+
+#[test]
+fn 删光后重打不学到被删内容的搭配() {
+    let mut s = session();
+    type_pick(&mut s, &[N, I, H, A, O], "你好");
+    backs(&mut s, 2);
+    type_pick(&mut s, &[N, I], "你");
+    assert!(!s.ime.user_export().contains("@ng"), "{}", s.ime.user_export());
 }
 
 fn pk(s: &mut Session, code: i64, shift: bool) -> Value {
