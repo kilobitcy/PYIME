@@ -585,3 +585,12 @@ fn 上屏后新组字的cancel记新串() {
     press(&mut s, &[VK_ESCAPE]);
     assert_eq!(cancels(), ["wo"]);
 }
+
+#[test]
+fn 部分选词后退格删光不记cancel() {
+    let mut s = session();
+    cancels();
+    type_pick(&mut s, &[N, I, H, A, O], "你");
+    press(&mut s, &[VK_BACK, VK_BACK, VK_BACK]);
+    assert!(cancels().is_empty());
+}

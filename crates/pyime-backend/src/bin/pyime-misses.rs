@@ -24,6 +24,8 @@ struct Group {
     wrong: bool,
     /// 已作为纠错期望累加过,记下该用例的 (拼音, 期望);不再计入 ② ③,被撤回时用来回收该用例。
     used: Option<(String, String)>,
+    /// 部分选词后按 Esc 放弃,文字未上屏。
+    dropped: bool,
 }
 
 impl Group {
@@ -111,6 +113,9 @@ fn parse(lines: &[Value], report: &mut Report) -> (Vec<Group>, Vec<Event>) {
             continue;
         }
         if let Some(input) = v["cancel"].as_str() {
+            if let Some((g, _)) = open {
+                groups[g].dropped = true;
+            }
             open = None;
             let top = v["top"].as_array().map(|a| a.iter().map(str_of).collect()).unwrap_or_default();
             events.push(Event::Cancel { input: input.to_string(), top, ts });
@@ -137,6 +142,7 @@ fn parse(lines: &[Value], report: &mut Report) -> (Vec<Group>, Vec<Event>) {
                     ts,
                     wrong: false,
                     used: None,
+                    dropped: false,
                 });
                 events.push(Event::Group(groups.len() - 1));
                 groups.len() - 1
@@ -168,6 +174,9 @@ fn retract(report: &mut Report, groups: &mut [Group], events: &[Event], i: usize
     let mut first: Option<usize> = None;
     for (j, e) in events.iter().enumerate().skip(pos + 1) {
         let Event::Group(g) = *e else { continue };
+        if groups[g].dropped {
+            continue;
+        }
         if j > i && groups[g].ts.saturating_sub(ts) > RETYPE_MS {
             break;
         }
@@ -207,6 +216,9 @@ fn cancel(report: &mut Report, groups: &[Group], events: &[Event], i: usize, inp
             Event::Cancel { input: s, top: t, .. } if valid(s.as_str(), t.as_slice()) => return,
             Event::Group(g) => {
                 let g = &groups[*g];
+                if g.dropped {
+                    continue;
+                }
                 if g.ts.saturating_sub(ts) <= CANCEL_MS {
                     report.suspects.push(format!("{input}(候选: {})→ 改打 {} 得 {}", top.join(" "), g.typed, g.text));
                 }
@@ -480,5 +492,29 @@ mod tests {
         ]);
         assert!(r.cases.is_empty());
         assert!(r.suspects.is_empty());
+    }
+
+    #[test]
+    fn esc丢弃的部分选词不参与纠错累加() {
+        let r = analyze(&[
+            sel("qinjixu", "qinjixu", "亲继续", 0, &["亲继续"], 1000),
+            ret(&[("qinjixu", "亲继续")], 2000),
+            sel("qinjixu", "qin", "请", 1, &["亲继续", "请"], 3000),
+            can("qinjixu", &["亲继续", "请"], 3500),
+            sel("jixu", "jixu", "继续", 0, &["继续"], 4000),
+        ]);
+        assert!(r.cases.is_empty());
+        assert_eq!(r.suspects, ["qinjixu 误选 亲继续 → 改打 jixu 得 继续", "qinjixu(候选: 亲继续 请)→ 改打 jixu 得 继续"]);
+    }
+
+    #[test]
+    fn esc丢弃的部分选词不参与放弃配对() {
+        let r = analyze(&[
+            can("chelue", &["车路饿"], 1000),
+            sel("celve", "ce", "策", 0, &["策略", "策"], 2000),
+            can("celve", &["策略", "策"], 2500),
+            sel("celve", "celve", "策略", 0, &["策略"], 3000),
+        ]);
+        assert_eq!(r.suspects, ["celve(候选: 策略 策)→ 改打 celve 得 策略"]);
     }
 }

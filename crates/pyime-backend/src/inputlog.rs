@@ -1,4 +1,4 @@
-//! 结构化输入日志:每次选词一行 JSON,写 `%LOCALAPPDATA%\PYIME\input-log.jsonl`,仅本机。
+//! 结构化输入日志:每个事件(选词、撤回、删除学习、放弃输入)一行 JSON,带时间戳与版本号,写 `%LOCALAPPDATA%\PYIME\input-log.jsonl`,仅本机。
 //! 供 `pyime-replay` 离线回放,量化排序改动;与 `log.disabled` 共用同一关闭开关。
 use crate::log;
 use serde_json::{json, Value};
