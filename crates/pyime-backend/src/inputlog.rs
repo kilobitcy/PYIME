@@ -1,7 +1,7 @@
 //! 结构化输入日志:每次选词一行 JSON,写 `%LOCALAPPDATA%\PYIME\input-log.jsonl`,仅本机。
 //! 供 `pyime-replay` 离线回放,量化排序改动;与 `log.disabled` 共用同一关闭开关。
 use crate::log;
-use serde_json::json;
+use serde_json::{json, Value};
 use std::fs::{self, File, OpenOptions};
 use std::io::Write;
 use std::sync::{Mutex, OnceLock};
@@ -9,7 +9,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 const MAX_BYTES: u64 = 20 * 1024 * 1024;
 /// 每条记录保存的候选前几名。
-const TOP: usize = 5;
+pub(crate) const TOP: usize = 5;
 static FILE: OnceLock<Mutex<File>> = OnceLock::new();
 
 /// 打开日志(幂等)。被关闭或无法创建时静默返回。
@@ -27,33 +27,75 @@ pub fn init() {
     }
 }
 
-/// 一次选词:`input` 为选词时的完整拼音串,`typed` 为本次消耗的部分,`index` 为选中项在全部候选中的下标。
-pub fn select(input: &str, context: &str, typed: &str, text: &str, index: usize, top: &[&str]) {
-    let Some(file) = FILE.get() else { return };
+/// 写一行:补上时间戳与后端版本号。测试下同时存入本线程的捕获列表,供断言。
+fn write(mut line: Value) {
     let ms = SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |d| d.as_millis() as u64);
-    let top: Vec<&str> = top.iter().take(TOP).copied().collect();
-    let line = json!({ "ts": ms, "input": input, "context": context, "typed": typed, "text": text, "index": index, "top": top });
+    line["ts"] = json!(ms);
+    line["v"] = json!(env!("CARGO_PKG_VERSION"));
+    #[cfg(test)]
+    CAPTURED.with(|c| c.borrow_mut().push(line.clone()));
+    let Some(file) = FILE.get() else { return };
     if let Ok(mut f) = file.lock() {
         let _ = writeln!(f, "{line}");
     }
+}
+
+/// 一次选词:`input` 为选词时的完整拼音串,`typed` 为本次消耗的部分,`index` 为选中项在全部候选中的下标。
+pub fn select(input: &str, context: &str, typed: &str, text: &str, index: usize, top: &[&str]) {
+    let top: Vec<&str> = top.iter().take(TOP).copied().collect();
+    write(json!({ "input": input, "context": context, "typed": typed, "text": text, "index": index, "top": top }));
 }
 
 /// 撤销一次组词的学习:`items` 为 (typed, text, pairs, prev)。
 pub fn retract(items: &[(String, String, u16, String)]) {
-    let Some(file) = FILE.get() else { return };
-    let ms = SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |d| d.as_millis() as u64);
-    let line = json!({ "ts": ms, "retract": items });
-    if let Ok(mut f) = file.lock() {
-        let _ = writeln!(f, "{line}");
-    }
+    write(json!({ "retract": items }));
 }
 
 /// 用户删除了某候选的个人学习:`input` 为当时的拼音串,`noop` 表示删除后候选顺序没有变化。
 pub fn forget(input: &str, text: &str, noop: bool) {
-    let Some(file) = FILE.get() else { return };
-    let ms = SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |d| d.as_millis() as u64);
-    let line = json!({ "ts": ms, "forget": text, "input": input, "noop": noop });
-    if let Ok(mut f) = file.lock() {
-        let _ = writeln!(f, "{line}");
+    write(json!({ "forget": text, "input": input, "noop": noop }));
+}
+
+/// 放弃一次组字(Esc,或退格删光且无上屏):`input` 为本次组字中最长的拼音,`top` 为其当时的候选前几名。
+pub fn cancel(input: &str, top: &[String]) {
+    write(json!({ "cancel": input, "top": top }));
+}
+
+#[cfg(test)]
+thread_local! {
+    static CAPTURED: std::cell::RefCell<Vec<Value>> = const { std::cell::RefCell::new(Vec::new()) };
+}
+
+/// 取出并清空本线程已写的日志行(仅测试)。
+#[cfg(test)]
+pub fn take_captured() -> Vec<Value> {
+    CAPTURED.with(|c| std::mem::take(&mut *c.borrow_mut()))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn 每行带版本与时间戳() {
+        take_captured();
+        select("nihao", "", "nihao", "你好", 0, &["你好", "你", "泥", "尼", "拟", "逆"]);
+        let lines = take_captured();
+        assert_eq!(lines.len(), 1);
+        assert_eq!(lines[0]["v"], env!("CARGO_PKG_VERSION"));
+        assert!(lines[0]["ts"].as_u64().unwrap() > 0);
+        assert_eq!(lines[0]["text"], "你好");
+        assert_eq!(lines[0]["top"].as_array().unwrap().len(), TOP);
+    }
+
+    #[test]
+    fn 放弃输入记拼音与候选() {
+        take_captured();
+        cancel("chelue", &["车".to_string(), "撤".to_string()]);
+        let lines = take_captured();
+        assert_eq!(lines.len(), 1);
+        assert_eq!(lines[0]["cancel"], "chelue");
+        assert_eq!(lines[0]["top"], json!(["车", "撤"]));
+        assert_eq!(lines[0]["v"], env!("CARGO_PKG_VERSION"));
     }
 }
