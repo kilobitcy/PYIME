@@ -1,7 +1,7 @@
 //! 全进程共享的输入法状态:引擎(含词典与用户学习数据)及用户数据存盘。
 use crate::log;
 use pyime_engine::dict::{Dict, DictBuilder};
-use pyime_engine::engine::{Candidate, Engine};
+use pyime_engine::engine::{Candidate, Engine, Lesson};
 use pyime_engine::fuzzy::FuzzyConfig;
 use pyime_engine::gram::Gram;
 use pyime_engine::user::UserModel;
@@ -124,19 +124,22 @@ impl Ime {
         self.engine.borrow().candidates_after(input, context)
     }
 
-    /// 学习一次选择并存盘;存盘失败只记日志。`pairs` 是该候选用到的模糊规则,`prev` 是其上文。
-    pub fn learn(&self, typed: &str, text: &str, pairs: u16, prev: &str) {
+    /// 学习一次选择(连同整句拆出的模糊词)并只存盘一次;存盘失败只记日志。
+    /// `pairs` 是该候选用到的模糊规则,`prev` 是其上文,`lessons` 见 `Candidate::lessons`。
+    pub fn learn(&self, typed: &str, text: &str, pairs: u16, prev: &str, lessons: &[Lesson]) {
         let mut engine = self.engine.borrow_mut();
         engine.learn(typed, text);
         engine.learn_fuzzy(pairs);
         engine.learn_next(prev, text);
+        engine.learn_lessons(lessons);
         self.save(&engine);
     }
 
-    /// 撤销一次 `learn` 并存盘。
-    pub fn unlearn(&self, typed: &str, text: &str, pairs: u16, prev: &str) {
+    /// 撤销一次 `learn`(含 lessons)并存盘。
+    pub fn unlearn(&self, typed: &str, text: &str, pairs: u16, prev: &str, lessons: &[Lesson]) {
         let mut engine = self.engine.borrow_mut();
         engine.unlearn(typed, text, pairs, prev);
+        engine.unlearn_lessons(lessons);
         self.save(&engine);
     }
 

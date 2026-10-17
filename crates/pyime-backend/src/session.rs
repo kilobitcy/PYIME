@@ -1,6 +1,6 @@
 //! 单个前端连接的会话状态:拼音串、候选、分页与选词。
 use crate::ime::Ime;
-use pyime_engine::engine::Candidate;
+use pyime_engine::engine::{Candidate, Lesson};
 use serde_json::{json, Value};
 use crate::punct::{self, Mapped};
 use std::rc::Rc;
@@ -48,7 +48,8 @@ fn tail3(s: &str) -> String {
 }
 
 /// 一次学习:(键入拼音, 词, 用到的模糊规则, 上文)。
-type Learned = (String, String, u16, String);
+/// 一次学习:(键入拼音, 上屏文字, 模糊规则位, 上文, 整句拆出的模糊词)。
+type Learned = (String, String, u16, String, Vec<Lesson>);
 
 /// 刚上屏的一次组词:记下它做过的学习。随后放行的退格删光它(含随之上屏的标点),
 /// 或删过之后对同一串拼音改选了别的词,就把这些学习撤回。
@@ -229,11 +230,17 @@ impl Session {
             return;
         }
         let Some(l) = self.last.take() else { return };
-        crate::inputlog::retract(&l.learned);
-        for (t, w, pairs, ctx) in &l.learned {
-            self.ime.unlearn(t, w, *pairs, ctx);
-        }
+        self.retract(&l.learned);
         self.context.clear();
+    }
+
+    /// 撤回一次上屏的全部学习。日志只记候选自身的四元组(格式不变),lessons 随之撤销。
+    fn retract(&self, learned: &[Learned]) {
+        let items: Vec<(String, String, u16, String)> = learned.iter().map(|(t, w, p, c, _)| (t.clone(), w.clone(), *p, c.clone())).collect();
+        crate::inputlog::retract(&items);
+        for (t, w, pairs, ctx, lessons) in learned {
+            self.ime.unlearn(t, w, *pairs, ctx, lessons);
+        }
     }
 
     /// 一次组词整句上屏:若是对刚被退格删掉的同一串拼音改选了别的词,撤回上次的学习;再记下这次。
@@ -245,10 +252,7 @@ impl Session {
                 prev.text.chars().take(n).collect()
             };
             if prev.backspaces > 0 && prev.typed == typed && prev_text != text {
-                crate::inputlog::retract(&prev.learned);
-                for (t, w, pairs, ctx) in &prev.learned {
-                    self.ime.unlearn(t, w, *pairs, ctx);
-                }
+                self.retract(&prev.learned);
             }
         }
         self.last = Some(Last { learned: std::mem::take(&mut self.learned), typed, text: text.to_string(), punct: 0, backspaces: 0 });
@@ -308,8 +312,9 @@ impl Session {
         let index = self.page * PAGE_SIZE + idx;
         let typed: String = self.input.drain(..c.consumed).collect();
         crate::inputlog::select(&input, &ctx, &typed, &c.text, index, &tops);
-        self.ime.learn(&typed, &c.text, c.pairs, &ctx);
-        self.learned.push((typed.clone(), c.text.clone(), c.pairs, ctx));
+        let lessons = c.lessons(&typed, &ctx);
+        self.ime.learn(&typed, &c.text, c.pairs, &ctx, &lessons);
+        self.learned.push((typed.clone(), c.text.clone(), c.pairs, ctx, lessons));
         self.pending.push_str(&c.text);
         self.typed_all.push_str(&typed);
         self.segments += 1;
@@ -318,8 +323,8 @@ impl Session {
             self.peak = None;
             let text = std::mem::take(&mut self.pending);
             if self.segments > 1 {
-                self.ime.learn(&self.typed_all, &text, 0, ""); // 分段选完的整句也学
-                self.learned.push((self.typed_all.clone(), text.clone(), 0, String::new()));
+                self.ime.learn(&self.typed_all, &text, 0, "", &[]); // 分段选完的整句也学
+                self.learned.push((self.typed_all.clone(), text.clone(), 0, String::new(), Vec::new()));
             }
             let typed_all = std::mem::take(&mut self.typed_all);
             self.finish_commit(typed_all, &text);

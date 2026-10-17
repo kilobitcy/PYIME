@@ -612,3 +612,29 @@ fn 部分选词后退格删光不记cancel() {
     press(&mut s, &[VK_BACK, VK_BACK, VK_BACK]);
     assert!(cancels().is_empty());
 }
+
+const L: i64 = 76;
+
+#[test]
+fn 整句里的模糊词随选中被学习_退格删光一并撤回() {
+    let mut s = session();
+    type_pick(&mut s, &[L, I, W, O], "你我"); // li 经 n=l 模糊得"你"
+    let x = s.ime.user_export();
+    assert!(x.contains("liwo\t你我\t1") && x.contains("li\t你\t1"), "{x}");
+    backs(&mut s, 2);
+    let x = s.ime.user_export();
+    assert!(!x.contains("liwo\t你我") && !x.contains("li\t你"), "{x}");
+}
+
+#[test]
+fn 撤回日志仍只记候选自身四元组() {
+    let mut s = session();
+    crate::inputlog::take_captured();
+    type_pick(&mut s, &[L, I, W, O], "你我");
+    backs(&mut s, 2);
+    let lines = crate::inputlog::take_captured();
+    let items = lines.iter().find_map(|l| l["retract"].as_array().cloned()).unwrap();
+    assert_eq!(items.len(), 1);
+    assert_eq!(items[0].as_array().unwrap().len(), 4);
+    assert_eq!(items[0][1], "你我");
+}
