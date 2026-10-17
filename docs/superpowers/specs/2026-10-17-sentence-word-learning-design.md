@@ -27,13 +27,26 @@
 
 ## 1. 引擎:整句候选带出模糊词(`crates/pyime-engine/src/engine.rs`)
 
-- `Candidate` 新增 `pub parts: Vec<(usize, usize, String)>`:整句中**模糊且完整**的词
-  (`Word.fuzzy > 0 && !Word.partial`)的 `(起, 止, 词)`,起止为输入中的字节位置,按出现顺序。
+- `Candidate` 新增 `pub parts: Vec<(usize, usize, usize, String)>`:整句中**模糊且完整**的词
+  (`Word.fuzzy > 0 && !Word.partial`)的 `(起, 止, 句中字位置, 词)`,起止为输入中的字节位置,
+  句中字位置为该词之前的字数,按出现顺序。
 - 只有 `sentences()` 产出的整句填写;单词候选、用户短语为空。
   `matching()` 注入的用户短语 `fuzzy == 0`,自然不会被当成"词"再学一次。
-- 新增 `Candidate::lessons(&self, typed: &str, context: &str) -> Vec<(String, String, String)>`,
+- 新增 `pub type Lesson = (String, String, String)` 与 `Candidate::lessons(&self, typed: &str, context: &str) -> Vec<Lesson>`,
   返回 `(typed[起..止], 词, 上文)`;上文为"`context` + 整句中该词之前的全部文字"的末尾 3 个字
-  (与 `tail` 一致,前面的精确词也计入上文)。为此回溯时一并记下每个模糊词在句文字中的起点。
+  (与 `tail` 一致,前面的精确词也计入上文)。
+- 新增 `Engine::learn_lessons(&[Lesson])`(逐项 `learn` + `learn_next`)与 `Engine::unlearn_lessons(&[Lesson])`,
+  后端与回放共用。
+
+### 1b. 学过的模糊词在整句分档中按精确算(写计划时发现,必需)
+
+- `sentences()` 把整句分为精确 / 仅模糊 / 含残缺三档,**精确档整体排在模糊档之前**,与得分无关。
+  真实日志里"请思考"排第 4,正是排在"亲是靠、秦是靠、亲是考"三条精确整句之后。
+  仅给"请"加分,"请检查"仍在模糊档,排不到前面。
+- 改为:`Word` 新增 `learned`(用户曾为这段拼音直接选过该词,即 `UserModel` 精确层有 `(片段, 词)`,
+  新增 `UserModel::chose(typed, word) -> bool`);整句分档与束搜索分束时,`fuzzy > 0 && learned` 的词按精确算。
+  `Candidate.fuzzy`、`pairs` 不变(仍记模糊次数与规则,`parts` 仍收录该词,重复使用会继续累加)。
+- 整段词的 `exact_whole` 判断不改。
 - `typed` 必须是 `input[..consumed]`(从当前输入开头起),与 `parts` 偏移同基准。
 
 ## 2. 后端(`crates/pyime-backend/src/{ime,session}.rs`)
@@ -80,5 +93,5 @@
 验收:
 - `cargo test`、`cargo clippy` 通过。
 - `pyime-replay installer/pyime.dict /tmp/input-log.jsonl --gram /tmp/gram/pyime.gram -v`:
-  首选不低于 80.3%、前 3 名不低于 91.4%,"请X"类名次明显提前;
+  首选不低于 80.2%、前 3 名不低于 91.4%(基线因 `matching()` 遍历 HashMap 的同分次序,首选在 505–506 条间浮动),"请X"类名次明显提前;
   对比改动前后 `-v` 输出,逐条列出新增或名次变差的项并分析。不可接受时另立设计。
