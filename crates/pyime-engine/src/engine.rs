@@ -77,6 +77,15 @@ struct Word {
     cuts: Vec<usize>,
     /// 末尾残缺音节凑出来的词,不算"精确"。
     partial: bool,
+    /// 用户曾为这段拼音直接选过该词:模糊得来也按精确参与整句分档。
+    learned: bool,
+}
+
+impl Word {
+    /// 整句分档时是否算"不精确":未学过的模糊词,或残缺音节凑出的词。
+    fn loose(&self) -> bool {
+        (self.fuzzy > 0 && !self.learned) || self.partial
+    }
 }
 
 /// 沿切分格累积的模糊状态:次数、个人偏好折扣、用到的规则位。
@@ -202,7 +211,7 @@ impl Engine {
             for e in self.top_entries(&next) {
                 let bonus = self.user.bonus(&input[start..], &e.word);
                 let score = f64::from(e.weight.max(1)).ln() - self.fuzzy_penalty * f64::from(a.fuzzy) + a.discount - PARTIAL_PENALTY + bonus - if key.is_empty() { SINGLE_CHAR_DISCOUNT } else { 0.0 };
-                out.push(Word { start, end: input.len(), text: e.word, score, fuzzy: a.fuzzy, pairs: a.pairs, cuts: cuts.to_vec(), partial: true });
+                out.push(Word { start, end: input.len(), text: e.word, score, fuzzy: a.fuzzy, pairs: a.pairs, cuts: cuts.to_vec(), partial: true, learned: false });
             }
         }
     }
@@ -220,8 +229,9 @@ impl Engine {
                 let a = self.step(acc, c, m);
                 for e in self.top_entries(&next) {
                     let bonus = self.user.bonus(&input[start..end], &e.word);
+                    let learned = self.user.chose(&input[start..end], &e.word);
                     let score = f64::from(e.weight.max(1)).ln() - self.fuzzy_penalty * f64::from(a.fuzzy) + a.discount + bonus - if depth == 0 { SINGLE_CHAR_DISCOUNT } else { 0.0 };
-                    out.push(Word { start, end, text: e.word, score, fuzzy: a.fuzzy, pairs: a.pairs, cuts: cuts.clone(), partial: false });
+                    out.push(Word { start, end, text: e.word, score, fuzzy: a.fuzzy, pairs: a.pairs, cuts: cuts.clone(), partial: false, learned });
                 }
                 if depth + 1 < MAX_SYLLABLES {
                     cuts.push(end);
@@ -253,7 +263,7 @@ impl Engine {
         }
         for (typed, text, bonus) in self.user.matching(input) {
             if !words.iter().any(|w| w.start == 0 && w.end == typed.len() && w.text == text) {
-                words.push(Word { start: 0, end: typed.len(), text: text.to_string(), score: USER_PHRASE_BASE + bonus, fuzzy: 0, pairs: 0, cuts: Vec::new(), partial: false });
+                words.push(Word { start: 0, end: typed.len(), text: text.to_string(), score: USER_PHRASE_BASE + bonus, fuzzy: 0, pairs: 0, cuts: Vec::new(), partial: false, learned: false });
             }
         }
         if !context.is_empty() {
@@ -305,11 +315,11 @@ fn sentences(words: &[Word], far: usize, bigram: &dyn Fn(&str, &str) -> f64) -> 
         let w = &words[i];
         let mut next = Vec::new();
         if w.start == 0 {
-            next.push((w.score - WORD_COST, i, 0, tail(&w.text), w.fuzzy > 0 || w.partial));
+            next.push((w.score - WORD_COST, i, 0, tail(&w.text), w.loose()));
         } else {
             for (r, p) in best[w.start].iter().enumerate() {
                 let total = p.0 + w.score - WORD_COST + bigram(&p.3, &w.text);
-                next.push((total, i, r, tail(&format!("{}{}", p.3, w.text)), p.4 || w.fuzzy > 0 || w.partial));
+                next.push((total, i, r, tail(&format!("{}{}", p.3, w.text)), p.4 || w.loose()));
             }
         }
         best[w.end].extend(next);
@@ -324,7 +334,7 @@ fn sentences(words: &[Word], far: usize, bigram: &dyn Fn(&str, &str) -> f64) -> 
     let mut out: Vec<(Candidate, f64, bool)> = Vec::new();
     for r in 0..best[far].len() {
         let (mut pos, mut rank) = (far, r);
-        let (mut path, mut fuzzy, mut pairs, mut partial, mut cuts) = (Vec::new(), 0u8, 0u16, false, Vec::new());
+        let (mut path, mut fuzzy, mut pairs, mut cuts) = (Vec::new(), 0u8, 0u16, Vec::new());
         while pos > 0 {
             let (_, wi, prev_rank, _, _) = &best[pos][rank];
             let w = &words[*wi];
@@ -335,7 +345,6 @@ fn sentences(words: &[Word], far: usize, bigram: &dyn Fn(&str, &str) -> f64) -> 
             if w.start > 0 {
                 cuts.push(w.start);
             }
-            partial |= w.partial;
             (pos, rank) = (w.start, *prev_rank);
         }
         path.reverse();
@@ -344,7 +353,7 @@ fn sentences(words: &[Word], far: usize, bigram: &dyn Fn(&str, &str) -> f64) -> 
             out.push(({
                 cuts.sort_unstable();
                 Candidate { text, consumed: far, fuzzy, pairs, cuts, parts: fuzzy_parts(&path) }
-            }, best[far][r].0, fuzzy == 0 && !partial));
+            }, best[far][r].0, !best[far][r].4));
         }
     }
     // 三档:精确 / 仅模糊 / 含残缺音节;各档按得分,取 3+2+1 条,免得被前一档的噪声挤掉
@@ -602,5 +611,14 @@ mod tests {
         assert!(x.contains("qin\t请\t1") && x.contains("@ng\t说\t请\t1"), "{x}");
         e.unlearn_lessons(&ls);
         assert_eq!(e.user().export(), "");
+    }
+
+    #[test]
+    fn 整句学过的模糊词推广到新句子() {
+        let mut e = engine(&[("qin", "亲", 50_000), ("qing", "请", 20_000), ("si kao", "思考", 10_000), ("jian cha", "检查", 10_000)]);
+        assert_ne!(texts(&e, "qinjiancha")[0], "请检查");
+        let ls = cand(&e, "qinsikao", "请思考").lessons("qinsikao", "");
+        e.learn_lessons(&ls);
+        assert_eq!(texts(&e, "qinjiancha")[0], "请检查");
     }
 }

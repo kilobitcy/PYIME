@@ -107,6 +107,11 @@ impl UserModel {
         self.words.contains_key(word)
     }
 
+    /// 用户是否曾为拼音 `typed` 直接选过 `word`(精确层有记录)。
+    pub fn chose(&self, typed: &str, word: &str) -> bool {
+        self.pairs.contains_key(&(typed.to_string(), word.to_string()))
+    }
+
     /// `typed` 对应 `word` 的加分,没学过为 0。
     pub fn bonus(&self, typed: &str, word: &str) -> f64 {
         let mut b = 0.0;
