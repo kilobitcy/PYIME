@@ -279,7 +279,8 @@ impl Engine {
         let bigram = |ctx: &str, w: &str| self.gram_bonus(ctx, w);
         let scored = sentences(words, far, &bigram);
         let top_sentence = scored.first().map(|s| s.1);
-        let top_exact = scored.first().is_some_and(|s| s.2);
+        // 学过的模糊词只影响整句之间的分档(.2),置前只认真正无模糊的整句,免得整句压过整段词
+        let top_exact = scored.first().is_some_and(|s| s.2 && s.0.fuzzy == 0);
         let sents: Vec<Candidate> = scored.into_iter().map(|s| s.0).collect();
         let mut firsts: Vec<&Word> = words.iter().filter(|w| w.start == 0).collect();
         firsts.sort_by(|a, b| b.end.cmp(&a.end).then(b.score.total_cmp(&a.score)));
@@ -620,5 +621,16 @@ mod tests {
         let ls = cand(&e, "qinsikao", "请思考").lessons("qinsikao", "");
         e.learn_lessons(&ls);
         assert_eq!(texts(&e, "qinjiancha")[0], "请检查");
+    }
+
+    #[test]
+    fn 学过的模糊单字不使整句压过整段模糊词() {
+        let mut e = engine(&[
+            ("qin", "亲", 50_000), ("qing", "请", 20_000), ("qing kuang xia", "情况下", 10_000),
+            ("kuan", "款", 10_000_000), ("xia", "下", 10_000_000),
+        ]);
+        assert_eq!(texts(&e, "qinkuanxia")[0], "情况下");
+        e.learn("qin", "请");
+        assert_eq!(texts(&e, "qinkuanxia")[0], "情况下");
     }
 }
