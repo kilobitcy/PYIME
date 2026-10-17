@@ -31,6 +31,9 @@ pub const GRAM_THRESHOLD: f64 = 0.0;
 pub const GRAM_WEIGHT: f64 = 0.6;
 const MAX_CANDIDATES: usize = 60;
 
+/// 选中整句时顺带学习的一项:(拼音片段, 词, 上文)。
+pub type Lesson = (String, String, String);
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct Candidate {
     pub text: String,
@@ -43,6 +46,23 @@ pub struct Candidate {
     /// 消耗的输入里音节边界的字节位置(不含 0 与 `consumed`),供组字串显示 `de'dao`。
     /// 词典外的用户短语没有切分,为空。
     pub cuts: Vec<usize>,
+    /// 整句中经模糊匹配得到的完整词:(起, 止, 句中字位置, 词),起止为输入中的字节位置,
+    /// 句中字位置为该词之前的字数。只有整句候选填写,供选中后逐词学习。
+    pub parts: Vec<(usize, usize, usize, String)>,
+}
+
+impl Candidate {
+    /// 选中本候选时顺带学习的模糊词。`typed` 为本候选消耗的拼音(`input[..consumed]`),
+    /// 上文取 `context` 加句中该词之前文字的末尾 3 个字。
+    pub fn lessons(&self, typed: &str, context: &str) -> Vec<Lesson> {
+        self.parts
+            .iter()
+            .map(|(s, e, at, w)| {
+                let before: String = self.text.chars().take(*at).collect();
+                (typed[*s..*e].to_string(), w.clone(), tail(&format!("{context}{before}")))
+            })
+            .collect()
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -138,6 +158,21 @@ impl Engine {
     /// 选中的候选用到了这些模糊规则,记下以便降低这几对的惩罚。
     pub fn learn_fuzzy(&mut self, pairs: u16) {
         self.user.learn_fuzzy(pairs);
+    }
+
+    /// 学一组整句拆出的模糊词(各记一次选词与搭配)。
+    pub fn learn_lessons(&mut self, lessons: &[Lesson]) {
+        for (t, w, p) in lessons {
+            self.user.learn(t, w);
+            self.user.learn_next(p, w);
+        }
+    }
+
+    /// 撤销 `learn_lessons`。
+    pub fn unlearn_lessons(&mut self, lessons: &[Lesson]) {
+        for (t, w, p) in lessons {
+            self.unlearn(t, w, 0, p);
+        }
     }
 
     /// 同一键取词频前 `PER_KEY` 个,再补上更靠后但用户学过的词(否则截断会让学习加分落空)。
@@ -238,7 +273,7 @@ impl Engine {
         let sents: Vec<Candidate> = scored.into_iter().map(|s| s.0).collect();
         let mut firsts: Vec<&Word> = words.iter().filter(|w| w.start == 0).collect();
         firsts.sort_by(|a, b| b.end.cmp(&a.end).then(b.score.total_cmp(&a.score)));
-        let as_cand = |w: &&Word| Candidate { text: w.text.clone(), consumed: w.end, fuzzy: w.fuzzy, pairs: w.pairs, cuts: w.cuts.clone() };
+        let as_cand = |w: &&Word| Candidate { text: w.text.clone(), consumed: w.end, fuzzy: w.fuzzy, pairs: w.pairs, cuts: w.cuts.clone(), parts: Vec::new() };
         let (whole, rest): (Vec<&Word>, Vec<&Word>) = firsts.into_iter().partition(|w| w.end == far);
         // 没有精确的整段词、整句完全精确且得分高于最佳整段词时,整句排最前;否则整句紧跟整段词
         let exact_whole = whole.iter().any(|w| w.fuzzy == 0);
@@ -289,11 +324,11 @@ fn sentences(words: &[Word], far: usize, bigram: &dyn Fn(&str, &str) -> f64) -> 
     let mut out: Vec<(Candidate, f64, bool)> = Vec::new();
     for r in 0..best[far].len() {
         let (mut pos, mut rank) = (far, r);
-        let (mut parts, mut fuzzy, mut pairs, mut partial, mut cuts) = (Vec::new(), 0u8, 0u16, false, Vec::new());
+        let (mut path, mut fuzzy, mut pairs, mut partial, mut cuts) = (Vec::new(), 0u8, 0u16, false, Vec::new());
         while pos > 0 {
             let (_, wi, prev_rank, _, _) = &best[pos][rank];
             let w = &words[*wi];
-            parts.push(w.text.as_str());
+            path.push(w);
             fuzzy = fuzzy.saturating_add(w.fuzzy);
             pairs |= w.pairs;
             cuts.extend(w.cuts.iter().copied());
@@ -303,11 +338,12 @@ fn sentences(words: &[Word], far: usize, bigram: &dyn Fn(&str, &str) -> f64) -> 
             partial |= w.partial;
             (pos, rank) = (w.start, *prev_rank);
         }
-        let text: String = parts.iter().rev().copied().collect();
-        if parts.len() >= 2 && out.len() < BEAM && !out.iter().any(|c| c.0.text == text) {
+        path.reverse();
+        let text: String = path.iter().map(|w| w.text.as_str()).collect();
+        if path.len() >= 2 && out.len() < BEAM && !out.iter().any(|c| c.0.text == text) {
             out.push(({
                 cuts.sort_unstable();
-                Candidate { text, consumed: far, fuzzy, pairs, cuts }
+                Candidate { text, consumed: far, fuzzy, pairs, cuts, parts: fuzzy_parts(&path) }
             }, best[far][r].0, fuzzy == 0 && !partial));
         }
     }
@@ -324,6 +360,19 @@ fn sentences(words: &[Word], far: usize, bigram: &dyn Fn(&str, &str) -> f64) -> 
 fn tail(s: &str) -> String {
     let n = s.chars().count();
     s.chars().skip(n.saturating_sub(3)).collect()
+}
+
+/// 整句路径(按出现顺序)中模糊且完整的词:(起, 止, 句中字位置, 词)。
+fn fuzzy_parts(path: &[&Word]) -> Vec<(usize, usize, usize, String)> {
+    let mut at = 0;
+    let mut out = Vec::new();
+    for w in path {
+        if w.fuzzy > 0 && !w.partial {
+            out.push((w.start, w.end, at, w.text.clone()));
+        }
+        at += w.text.chars().count();
+    }
+    out
 }
 
 #[cfg(test)]
@@ -510,5 +559,48 @@ mod tests {
         assert_eq!(texts(&e, "ni")[0], "泥");
         e.forget("泥");
         assert_eq!(texts(&e, "ni"), ["你", "泥"]);
+    }
+
+    fn cand(e: &Engine, input: &str, text: &str) -> Candidate {
+        e.candidates(input).into_iter().find(|c| c.text == text).unwrap()
+    }
+
+    #[test]
+    fn 整句候选只带出模糊完整词() {
+        let e = engine(&[("qin", "亲", 50_000), ("qing", "请", 20_000), ("si kao", "思考", 10_000)]);
+        assert_eq!(cand(&e, "qinsikao", "请思考").parts, [(0, 3, 0, "请".to_string())]);
+        assert!(cand(&e, "qinsikao", "亲思考").parts.is_empty());
+        assert!(cand(&e, "qinsikao", "请").parts.is_empty());
+    }
+
+    #[test]
+    fn 句末残缺词不进_parts() {
+        let e = engine(&[("qing", "请", 20_000), ("zhi", "之", 10_000)]);
+        assert_eq!(cand(&e, "qinz", "请之").lessons("qinz", ""), [("qin".to_string(), "请".to_string(), String::new())]);
+    }
+
+    #[test]
+    fn lessons_上文含前文与句中前面的词() {
+        let e = engine(&[("wo", "我", 5000), ("xi wang", "希望", 5000)]);
+        let c = cand(&e, "woxiwan", "我希望");
+        assert_eq!(c.parts, [(2, 7, 1, "希望".to_string())]);
+        assert_eq!(c.lessons("woxiwan", "说"), [("xiwan".to_string(), "希望".to_string(), "说我".to_string())]);
+    }
+
+    #[test]
+    fn 全精确整句没有_lessons() {
+        let e = engine(&[("wo", "我", 5000), ("kan dao", "看到", 5000), ("ta", "他", 9000), ("ta", "她", 5000), ("le", "了", 5000)]);
+        assert!(cand(&e, "wokandaotale", "我看到她了").lessons("wokandaotale", "").is_empty());
+    }
+
+    #[test]
+    fn learn_lessons_与_unlearn_lessons_对称() {
+        let mut e = engine(&[("qin", "亲", 50_000)]);
+        let ls = vec![("qin".to_string(), "请".to_string(), "说".to_string())];
+        e.learn_lessons(&ls);
+        let x = e.user().export();
+        assert!(x.contains("qin\t请\t1") && x.contains("@ng\t说\t请\t1"), "{x}");
+        e.unlearn_lessons(&ls);
+        assert_eq!(e.user().export(), "");
     }
 }
