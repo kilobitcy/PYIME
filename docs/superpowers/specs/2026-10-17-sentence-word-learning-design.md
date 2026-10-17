@@ -48,6 +48,7 @@
   `Candidate.fuzzy`、`pairs` 不变(仍记模糊次数与规则,`parts` 仍收录该词,重复使用会继续累加)。
 - 整段词的 `exact_whole` 判断不改。
 - `typed` 必须是 `input[..consumed]`(从当前输入开头起),与 `parts` 偏移同基准。
+- 整句置前(`assemble` 的 `front`)只看第一条**完全无模糊**的精确整句的得分;学过的模糊词只影响整句之间的分档,不使整句压过整段词(真实日志中 情况下/防火墙 等因此曾掉出前 3)。
 
 ## 2. 后端(`crates/pyime-backend/src/{ime,session}.rs`)
 

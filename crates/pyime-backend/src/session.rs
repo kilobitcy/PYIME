@@ -47,7 +47,6 @@ fn tail3(s: &str) -> String {
     s.chars().skip(n.saturating_sub(3)).collect()
 }
 
-/// 一次学习:(键入拼音, 词, 用到的模糊规则, 上文)。
 /// 一次学习:(键入拼音, 上屏文字, 模糊规则位, 上文, 整句拆出的模糊词)。
 type Learned = (String, String, u16, String, Vec<Lesson>);
 

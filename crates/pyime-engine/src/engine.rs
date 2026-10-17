@@ -229,7 +229,7 @@ impl Engine {
                 let a = self.step(acc, c, m);
                 for e in self.top_entries(&next) {
                     let bonus = self.user.bonus(&input[start..end], &e.word);
-                    let learned = self.user.chose(&input[start..end], &e.word);
+                    let learned = a.fuzzy > 0 && self.user.chose(&input[start..end], &e.word);
                     let score = f64::from(e.weight.max(1)).ln() - self.fuzzy_penalty * f64::from(a.fuzzy) + a.discount + bonus - if depth == 0 { SINGLE_CHAR_DISCOUNT } else { 0.0 };
                     out.push(Word { start, end, text: e.word, score, fuzzy: a.fuzzy, pairs: a.pairs, cuts: cuts.clone(), partial: false, learned });
                 }
@@ -278,9 +278,10 @@ impl Engine {
         let Some(far) = words.iter().map(|w| w.end).max() else { return Vec::new() };
         let bigram = |ctx: &str, w: &str| self.gram_bonus(ctx, w);
         let scored = sentences(words, far, &bigram);
-        let top_sentence = scored.first().map(|s| s.1);
-        // 学过的模糊词只影响整句之间的分档(.2),置前只认真正无模糊的整句,免得整句压过整段词
-        let top_exact = scored.first().is_some_and(|s| s.2 && s.0.fuzzy == 0);
+        // 学过的模糊词只影响整句之间的分档(.2);置前只看第一条真正无模糊的精确整句的得分,
+        // 免得学过模糊词的整句占首位后,精确整句不再参与判断、低频整段模糊词反被顶到第一
+        let top_sentence = scored.iter().find(|s| s.2 && s.0.fuzzy == 0).map(|s| s.1);
+        let top_exact = top_sentence.is_some();
         let sents: Vec<Candidate> = scored.into_iter().map(|s| s.0).collect();
         let mut firsts: Vec<&Word> = words.iter().filter(|w| w.start == 0).collect();
         firsts.sort_by(|a, b| b.end.cmp(&a.end).then(b.score.total_cmp(&a.score)));
@@ -632,5 +633,16 @@ mod tests {
         assert_eq!(texts(&e, "qinkuanxia")[0], "情况下");
         e.learn("qin", "请");
         assert_eq!(texts(&e, "qinkuanxia")[0], "情况下");
+    }
+
+    #[test]
+    fn 学过模糊词不使低频整段模糊词反超精确整句() {
+        let mut e = engine(&[
+            ("qin", "亲", 50_000), ("qing", "请", 20_000), ("qing kuang xia", "情况下", 50),
+            ("kuan", "款", 10_000_000), ("xia", "下", 10_000_000),
+        ]);
+        assert_ne!(texts(&e, "qinkuanxia")[0], "情况下");
+        e.learn("qin", "请");
+        assert_ne!(texts(&e, "qinkuanxia")[0], "情况下");
     }
 }
