@@ -1,10 +1,11 @@
 //! 回放 `input-log.jsonl`:按日志顺序重放每次选词,统计选中项在候选里的名次,并边放边学习。
 //! 用法:pyime-replay <pyime.dict> <input-log.jsonl> [--gram <pyime.gram>] [--fuzzy-penalty <x>] [-v]
 use pyime_engine::dict::Dict;
-use pyime_engine::engine::Engine;
+use pyime_engine::engine::{Engine, Lesson};
 use pyime_engine::fuzzy::FuzzyConfig;
 use pyime_engine::gram::Gram;
 use serde_json::Value;
+use std::collections::HashMap;
 
 fn main() -> Result<(), String> {
     let mut pos = Vec::new();
@@ -29,12 +30,17 @@ fn main() -> Result<(), String> {
     }
     let text = String::from_utf8(read(log)?).map_err(|e| e.to_string())?;
     let (mut total, mut hit1, mut hit3, mut hit5, mut missing) = (0usize, 0usize, 0usize, 0usize, 0usize);
+    // 每次选词顺带学的 lessons,按 (typed, text, 上文) 记最近一次,供 retract 连带撤销(日志里不含 lessons)
+    let mut taught: HashMap<(String, String, String), Vec<Lesson>> = HashMap::new();
     for line in text.lines() {
         let Ok(v) = serde_json::from_str::<Value>(line) else { continue };
         if let Some(items) = v["retract"].as_array() {
             for it in items {
                 if let (Some(t), Some(w), Some(p), Some(c)) = (it[0].as_str(), it[1].as_str(), it[2].as_u64(), it[3].as_str()) {
                     engine.unlearn(t, w, p as u16, c);
+                    if let Some(ls) = taught.remove(&(t.to_string(), w.to_string(), c.to_string())) {
+                        engine.unlearn_lessons(&ls);
+                    }
                 }
             }
             continue;
@@ -66,9 +72,15 @@ fn main() -> Result<(), String> {
         }
         engine.learn(typed, chosen);
         engine.learn_next(ctx, chosen);
-        if let Some(r) = rank {
-            engine.learn_fuzzy(cands[r].pairs);
-        }
+        let lessons = match rank {
+            Some(r) => {
+                engine.learn_fuzzy(cands[r].pairs);
+                cands[r].lessons(&input[..cands[r].consumed], ctx)
+            }
+            None => Vec::new(),
+        };
+        engine.learn_lessons(&lessons);
+        taught.insert((typed.to_string(), chosen.to_string(), ctx.to_string()), lessons);
     }
     let pct = |n: usize| if total == 0 { 0.0 } else { n as f64 * 100.0 / total as f64 };
     println!("共 {total} 条;首选 {hit1} ({:.1}%) 前3 {hit3} ({:.1}%) 前5 {hit5} ({:.1}%) 未出现 {missing}", pct(hit1), pct(hit3), pct(hit5));
