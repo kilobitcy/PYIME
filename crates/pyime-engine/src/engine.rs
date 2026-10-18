@@ -5,8 +5,10 @@ use crate::fuzzy::{partial, variants, FuzzyConfig};
 use crate::pinyin::{is_syllable, syllables_at};
 use crate::user::UserModel;
 
-/// 每次模糊替换的惩罚(自然对数域,约等于词频缩小 e^3 ≈ 20 倍)。
-pub const FUZZY_PENALTY: f64 = 3.0;
+/// 多字词每次模糊替换的惩罚(自然对数域,约等于词频缩小 e^2.5 ≈ 12 倍)。
+pub const FUZZY_PENALTY: f64 = 2.5;
+/// 单字词模糊惩罚的额外部分:单字里"了""是"等虚词词频极高,需更高惩罚(默认合计 3.0)。
+const SINGLE_CHAR_FUZZY_EXTRA: f64 = 0.5;
 /// 整句里每多一个词的代价,使"长词"优于"拆成单字"。
 /// 末尾残缺音节(只打了开头)的惩罚,使同长度时完整音节的词优先。
 const PARTIAL_PENALTY: f64 = 3.0;
@@ -132,6 +134,11 @@ impl Engine {
         self.fuzzy_penalty = p;
     }
 
+    /// 一次模糊替换的惩罚;单字词另加 `SINGLE_CHAR_FUZZY_EXTRA`。
+    fn penalty(&self, single: bool) -> f64 {
+        self.fuzzy_penalty + if single { SINGLE_CHAR_FUZZY_EXTRA } else { 0.0 }
+    }
+
     pub fn set_user(&mut self, user: UserModel) {
         self.user = user;
     }
@@ -210,7 +217,7 @@ impl Engine {
             let a = self.step(acc, c, m);
             for e in self.top_entries(&next) {
                 let bonus = self.user.bonus(&input[start..], &e.word);
-                let score = f64::from(e.weight.max(1)).ln() - self.fuzzy_penalty * f64::from(a.fuzzy) + a.discount - PARTIAL_PENALTY + bonus - if key.is_empty() { SINGLE_CHAR_DISCOUNT } else { 0.0 };
+                let score = f64::from(e.weight.max(1)).ln() - self.penalty(key.is_empty()) * f64::from(a.fuzzy) + a.discount - PARTIAL_PENALTY + bonus - if key.is_empty() { SINGLE_CHAR_DISCOUNT } else { 0.0 };
                 out.push(Word { start, end: input.len(), text: e.word, score, fuzzy: a.fuzzy, pairs: a.pairs, cuts: cuts.to_vec(), partial: true, learned: false });
             }
         }
@@ -230,7 +237,7 @@ impl Engine {
                 for e in self.top_entries(&next) {
                     let bonus = self.user.bonus(&input[start..end], &e.word);
                     let learned = a.fuzzy > 0 && self.user.chose(&input[start..end], &e.word);
-                    let score = f64::from(e.weight.max(1)).ln() - self.fuzzy_penalty * f64::from(a.fuzzy) + a.discount + bonus - if depth == 0 { SINGLE_CHAR_DISCOUNT } else { 0.0 };
+                    let score = f64::from(e.weight.max(1)).ln() - self.penalty(depth == 0) * f64::from(a.fuzzy) + a.discount + bonus - if depth == 0 { SINGLE_CHAR_DISCOUNT } else { 0.0 };
                     out.push(Word { start, end, text: e.word, score, fuzzy: a.fuzzy, pairs: a.pairs, cuts: cuts.clone(), partial: false, learned });
                 }
                 if depth + 1 < MAX_SYLLABLES {
@@ -412,7 +419,7 @@ mod tests {
 
     #[test]
     fn 模糊词频足够高时可以胜出() {
-        // 惩罚约 20 倍:高频模糊词压过极低频的精确词,但不会压过同量级的精确词
+        // 单字惩罚 3.0 约 20 倍:高频模糊词压过极低频的精确词,但不会压过同量级的精确词
         let e = engine(&[("si", "死", 10), ("shi", "是", 100_000), ("shi", "时", 2_000)]);
         assert_eq!(texts(&e, "si")[0], "是");
         let e = engine(&[("si", "四", 5_000), ("shi", "是", 100_000)]);
@@ -509,7 +516,7 @@ mod tests {
 
     #[test]
     fn 个人模糊偏好降低该规则惩罚() {
-        // 之 的词频是 字 的 e^3 倍,惩罚 4 时输给精确的 字;接受两次 z=zh 后折扣约 1.1,反超
+        // 之 的词频是 字 的 20 倍(≈ e^3),单字惩罚 3.0 时输给精确的 字;接受两次 z=zh 后折扣约 1.1,反超
         let mut e = engine(&[("zi", "字", 1000), ("zhi", "之", 20_000)]);
         assert_eq!(texts(&e, "zi")[0], "字");
         let c = e.candidates("zi").into_iter().find(|c| c.text == "之").unwrap();
@@ -638,11 +645,20 @@ mod tests {
     #[test]
     fn 学过模糊词不使低频整段模糊词反超精确整句() {
         let mut e = engine(&[
-            ("qin", "亲", 50_000), ("qing", "请", 20_000), ("qing kuang xia", "情况下", 50),
+            ("qin", "亲", 50_000), ("qing", "请", 20_000), ("qing kuang xia", "情况下", 20),
             ("kuan", "款", 10_000_000), ("xia", "下", 10_000_000),
         ]);
         assert_ne!(texts(&e, "qinkuanxia")[0], "情况下");
         e.learn("qin", "请");
         assert_ne!(texts(&e, "qinkuanxia")[0], "情况下");
+    }
+
+    #[test]
+    fn 多字词模糊惩罚低于单字() {
+        // 模糊词词频为精确词 16 倍(ln16 ≈ 2.77):多字词惩罚 2.5,模糊词胜出;单字惩罚 3.0,精确字仍居首
+        let e = engine(&[("zi lei", "子类", 1000), ("zhi lei", "之类", 16_000)]);
+        assert_eq!(texts(&e, "zilei")[0], "之类");
+        let e = engine(&[("si", "四", 1000), ("shi", "是", 16_000)]);
+        assert_eq!(texts(&e, "si")[0], "四");
     }
 }
