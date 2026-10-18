@@ -130,6 +130,7 @@ impl Engine {
         gram + self.user.collocation(ctx, w)
     }
 
+    /// 设多字词每次模糊替换的惩罚;单字词另加 `SINGLE_CHAR_FUZZY_EXTRA`(0.5)。
     pub fn set_fuzzy_penalty(&mut self, p: f64) {
         self.fuzzy_penalty = p;
     }

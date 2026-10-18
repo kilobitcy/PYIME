@@ -66,7 +66,7 @@ Expected: FAIL,`left: "子类"`,`right: "之类"`。
     ("lan", "蓝", 1),           // 护住单字:高频 然(r=l)不得压过
 ```
 
-Run: `PYIME_DICT=installer/pyime.dict PYIME_GRAM=/tmp/gram/pyime.gram cargo test -q -p pyime-engine --release --test regression -- --ignored --nocapture 2>&1 | grep -E '通过|→'`
+Run: `PYIME_DICT=$PWD/installer/pyime.dict PYIME_GRAM=/tmp/gram/pyime.gram cargo test -q -p pyime-engine --release --test regression -- --ignored --nocapture 2>&1 | grep -E '通过|→'`
 Expected(现状):`通过 34/39`;失败列表为既有 3 条(zaizuijia、fengzhong、jintianxingqijia)
 加 `jiashan → 加上: 名次 Some(2),要求 ≤1`、`yinp → 硬盘: 名次 Some(4),要求 ≤3`;ne/si/lan 不在失败列表。
 
@@ -123,7 +123,7 @@ const SINGLE_CHAR_FUZZY_EXTRA: f64 = 0.5;
 Run: `cargo test -q 2>&1 | grep -E 'test result|FAILED|panicked'`
 Expected:全部 `ok`(pyime-engine lib 57 passed,含新测试)。若有既有单测失败,先分析分界线,只调造数据词频,不改断言,并在报告中逐条说明。
 
-Run: `PYIME_DICT=installer/pyime.dict PYIME_GRAM=/tmp/gram/pyime.gram cargo test -q -p pyime-engine --release --test regression -- --ignored --nocapture 2>&1 | grep -E '通过|→'`
+Run: `PYIME_DICT=$PWD/installer/pyime.dict PYIME_GRAM=/tmp/gram/pyime.gram cargo test -q -p pyime-engine --release --test regression -- --ignored --nocapture 2>&1 | grep -E '通过|→'`
 Expected:`通过 36/39`,失败列表只剩既有 3 条(zaizuijia、fengzhong、jintianxingqijia)。
 
 Run: `cargo clippy --all-targets 2>&1 | grep -cE '^warning: [^`]'`
