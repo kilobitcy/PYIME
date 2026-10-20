@@ -13,4 +13,7 @@ fi
 D="$RIME/cn_dicts"
 cargo run --release -q -p pyime-engine --bin pyime-dict-build -- installer/pyime.dict \
   "$D/8105.dict.yaml" "$D/base.dict.yaml" "$D/ext.dict.yaml" "$D/others.dict.yaml"
+E="$RIME/en_dicts"
+cargo run --release -q -p pyime-engine --bin pyime-en-build -- installer/pyime.en \
+  installer/en_it.txt "$E/en_ext.dict.yaml" "$E/en.dict.yaml"
 makensis -V2 -DVERSION="$VERSION" installer/pyime.nsi

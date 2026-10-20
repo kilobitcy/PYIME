@@ -2,3 +2,4 @@ target/
 installer/server.exe
 installer/*-setup.exe
 installer/pyime.dict
+installer/pyime.en
