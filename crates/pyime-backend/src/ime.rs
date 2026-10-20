@@ -73,7 +73,6 @@ fn local_file(name: &str) -> Option<PathBuf> {
     std::env::var_os("LOCALAPPDATA").map(|p| PathBuf::from(p).join("PYIME").join(name))
 }
 
-/// 英文词表:安装目录 `pyime.en` + 用户 `en.txt`(档位 0),再读回车学习计数;缺失的来源跳过。
 /// 读可选文本文件:不存在静默跳过,其他错误记日志后跳过。
 fn read_optional(p: &std::path::Path) -> Option<String> {
     match std::fs::read_to_string(p) {
@@ -86,6 +85,7 @@ fn read_optional(p: &std::path::Path) -> Option<String> {
     }
 }
 
+/// 英文词表:安装目录 `pyime.en` + 用户 `en.txt`(档位 0),再读回车学习计数;缺失的来源跳过。
 fn load_english(learned: Option<&PathBuf>) -> English {
     let mut items = match en_path().map(|p| (std::fs::read_to_string(&p), p)) {
         Some((Ok(t), _)) => parse_compiled(&t),
