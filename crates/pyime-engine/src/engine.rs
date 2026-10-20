@@ -1,5 +1,6 @@
 //! 候选生成:切分格 + 模糊展开 + 词典查询 + 整句 Viterbi,精确匹配优先、模糊匹配降权。
 use crate::dict::Dict;
+use crate::english::{English, Hit, TIER_CUSTOM};
 use crate::gram::Gram;
 use crate::fuzzy::{partial, variants, FuzzyConfig};
 use crate::pinyin::{is_syllable, syllables_at};
@@ -32,6 +33,14 @@ const LOOSE_BEAM: usize = 8;
 pub const GRAM_THRESHOLD: f64 = 0.0;
 pub const GRAM_WEIGHT: f64 = 0.6;
 const MAX_CANDIDATES: usize = 60;
+/// 英文候选落位:拼音不通时英文合计至多几条;残缺通时完全匹配、档位 0 补全各至多几条。
+const EN_UNPARSED: usize = 3;
+const EN_PARTIAL_EXACT: usize = 2;
+const EN_PARTIAL_COMPLETE: usize = 2;
+/// 英文插入位置的下标(第 3 位)。
+const EN_SLOT: usize = 2;
+/// 精确通时英文完全匹配至少几个字母才出(档位 0 不限)。
+const EN_EXACT_MIN: usize = 4;
 
 /// 选中整句时顺带学习的一项:(拼音片段, 词, 上文)。
 pub type Lesson = (String, String, String);
@@ -55,12 +64,13 @@ pub struct Candidate {
     pub source: Source,
 }
 
-/// 候选来源:整段词(词典或用户短语吃满输入)、整句(Viterbi 拼装)、前缀词(只吃前一段)。
+/// 候选来源:整段词(词典或用户短语吃满输入)、整句(Viterbi 拼装)、前缀词(只吃前一段)、英文(文字全为 ASCII)。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Source {
     Whole,
     Sentence,
     Prefix,
+    English,
 }
 
 impl Candidate {
@@ -108,6 +118,35 @@ struct Acc {
     pairs: u16,
 }
 
+/// 中文候选吃满输入的情况,决定英文候选落位。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Cover {
+    /// 没有吃满输入的中文。
+    None,
+    /// 吃满输入的路径都含残缺音节词。
+    Partial,
+    /// 有不含残缺音节词的路径吃满输入(模糊词允许)。
+    Exact,
+}
+
+/// 沿词的起止做可达性:只走完整词能到末尾为精确通,走上残缺词才到为残缺通。
+fn cover(words: &[Word], len: usize) -> Cover {
+    let (mut exact, mut any) = (vec![false; len + 1], vec![false; len + 1]);
+    exact[0] = true;
+    any[0] = true;
+    let mut ws: Vec<&Word> = words.iter().filter(|w| w.end <= len).collect();
+    ws.sort_by_key(|w| w.start);
+    for w in ws {
+        if any[w.start] {
+            any[w.end] = true;
+        }
+        if exact[w.start] && !w.partial {
+            exact[w.end] = true;
+        }
+    }
+    if exact[len] { Cover::Exact } else if any[len] { Cover::Partial } else { Cover::None }
+}
+
 pub struct Engine {
     dict: Dict,
     fuzzy_penalty: f64,
@@ -116,11 +155,12 @@ pub struct Engine {
     gram: Option<Gram>,
     gram_weight: f64,
     gram_threshold: f64,
+    english: Option<English>,
 }
 
 impl Engine {
     pub fn new(dict: Dict, cfg: FuzzyConfig) -> Engine {
-        Engine { dict, fuzzy_penalty: FUZZY_PENALTY, cfg, user: UserModel::default(), gram: None, gram_weight: GRAM_WEIGHT, gram_threshold: GRAM_THRESHOLD }
+        Engine { dict, fuzzy_penalty: FUZZY_PENALTY, cfg, user: UserModel::default(), gram: None, gram_weight: GRAM_WEIGHT, gram_threshold: GRAM_THRESHOLD, english: None }
     }
 
     pub fn set_gram(&mut self, gram: Gram) {
@@ -172,9 +212,29 @@ impl Engine {
         }
     }
 
-    /// 删除词 `text` 的全部个人学习(词库不受影响)。
+    /// 删除词 `text` 的全部个人学习(含回车学会的英文串;词库不受影响)。
     pub fn forget(&mut self, text: &str) {
         self.user.forget(text);
+        if let Some(en) = &mut self.english {
+            en.forget(text);
+        }
+    }
+
+    pub fn set_english(&mut self, english: English) {
+        self.english = Some(english);
+    }
+
+    pub fn english(&self) -> Option<&English> {
+        self.english.as_ref()
+    }
+
+    /// 回车原样上屏了 `input`:全小写字母、≥ 4 个且拼音非精确通时记一次;返回是否记了。
+    pub fn learn_raw(&mut self, input: &str) -> bool {
+        if input.len() < EN_EXACT_MIN || !input.bytes().all(|b| b.is_ascii_lowercase()) || cover(&self.words(input, ""), input.len()) == Cover::Exact {
+            return false;
+        }
+        self.english.get_or_insert_with(English::default).learn_raw(input);
+        true
     }
 
     /// 在上文 `prev` 之后上屏了 `text`,记下个人搭配。
@@ -267,6 +327,20 @@ impl Engine {
 
     /// 同 `candidates`,`context` 是光标前已上屏的文字,用于首词的搭配加分。
     pub fn candidates_after(&self, input: &str, context: &str) -> Vec<Candidate> {
+        let words = self.words(input, context);
+        let mut out = self.assemble(&words);
+        if let Some(en) = &self.english {
+            place_english(en, input, cover(&words, input.len()), &mut out);
+        }
+        for c in out.iter_mut().filter(|c| c.text.is_ascii()) {
+            c.source = Source::English;
+        }
+        out.truncate(MAX_CANDIDATES);
+        out
+    }
+
+    /// 收集从各可达位置出发的词与匹配的用户短语;有上文时首词加搭配分。
+    fn words(&self, input: &str, context: &str) -> Vec<Word> {
         let mut words = Vec::new();
         let mut reach = vec![false; input.len() + 1];
         reach[0] = true;
@@ -289,7 +363,7 @@ impl Engine {
                 w.score += self.gram_bonus(context, &w.text);
             }
         }
-        self.assemble(&words)
+        words
     }
 
     fn assemble(&self, words: &[Word]) -> Vec<Candidate> {
@@ -324,6 +398,34 @@ impl Engine {
             }
         }
         out
+    }
+}
+
+/// 按拼音三态把英文候选插进 `out`;`input` 须全为小写字母。
+fn place_english(en: &English, input: &str, cover: Cover, out: &mut Vec<Candidate>) {
+    if input.is_empty() || !input.bytes().all(|b| b.is_ascii_lowercase()) {
+        return;
+    }
+    let (exact, more) = en.lookup(input);
+    match cover {
+        Cover::None => insert_english(out, 0, input, exact.iter().chain(&more).take(EN_UNPARSED)),
+        Cover::Partial => {
+            insert_english(out, 0, input, exact.iter().take(EN_PARTIAL_EXACT));
+            insert_english(out, EN_SLOT, input, more.iter().filter(|h| h.tier == TIER_CUSTOM).take(EN_PARTIAL_COMPLETE));
+        }
+        Cover::Exact => insert_english(out, EN_SLOT, input, exact.iter().filter(|h| input.len() >= EN_EXACT_MIN || h.tier == TIER_CUSTOM).take(1)),
+    }
+}
+
+/// 从下标 `at`(超出则接末尾)起依次插入英文候选,已有同文字的跳过。
+fn insert_english<'a>(out: &mut Vec<Candidate>, at: usize, input: &str, hits: impl Iterator<Item = &'a Hit<'a>>) {
+    let mut i = at.min(out.len());
+    for h in hits {
+        if out.iter().any(|c| c.text == h.word) {
+            continue;
+        }
+        out.insert(i, Candidate { text: h.word.to_string(), consumed: input.len(), fuzzy: 0, pairs: 0, cuts: Vec::new(), parts: Vec::new(), source: Source::English });
+        i += 1;
     }
 }
 
@@ -682,5 +784,88 @@ mod tests {
         assert_eq!(cand(&e, "nihao", "你好").source, Source::Whole);
         assert_eq!(cand(&e, "nihaoma", "你好吗").source, Source::Sentence);
         assert_eq!(cand(&e, "nihaoma", "你好").source, Source::Prefix);
+    }
+
+    fn with_english(entries: &[(&str, &str, u32)], en: &[(&str, &str, u8)]) -> Engine {
+        let mut e = engine(entries);
+        e.set_english(English::new(en.iter().map(|&(k, w, t)| (k.to_string(), w.to_string(), t)).collect()));
+        e
+    }
+
+    #[test]
+    fn 拼音不通时英文排最前_合计至多3条() {
+        let en = [("playwright", "Playwright", 0), ("playwright", "playwright", 2), ("playwrights", "playwrights", 2), ("playwriting", "playwriting", 2)];
+        let e = with_english(&[("pa", "怕", 100)], &en);
+        let c = e.candidates("playw");
+        assert_eq!(c.iter().map(|c| c.text.as_str()).collect::<Vec<_>>(), vec!["Playwright", "playwright", "playwrights"]);
+        assert!(c.iter().all(|c| c.source == Source::English && c.consumed == 5 && c.cuts.is_empty()));
+    }
+
+    #[test]
+    fn 残缺通时完全匹配的英文排第一() {
+        let e = with_english(&[("su", "苏", 100), ("ba", "把", 100), ("gen", "跟", 100), ("ta", "他", 100)], &[("subagent", "subagent", 0)]);
+        let t = texts(&e, "subagent");
+        assert_eq!(t[0], "subagent");
+        assert!(t.len() > 1, "中文候选仍在");
+    }
+
+    #[test]
+    fn 残缺通时只补全档位0_插在第3位() {
+        let e = with_english(&[("ku", "苦", 100), ("bei", "被", 100)], &[("kubernetes", "Kubernetes", 0), ("kubectl", "kubectl", 2)]);
+        let t = texts(&e, "kube");
+        assert_eq!(t[2], "Kubernetes");
+        assert!(!t[..2].iter().any(|s| s.is_ascii()));
+        assert!(!t.contains(&"kubectl".to_string()));
+    }
+
+    #[test]
+    fn 精确通时完全匹配的英文插第3位_不补全() {
+        let dict = [("chang e", "嫦娥", 1000), ("chang ge", "唱歌", 900), ("chang", "长", 800), ("e", "鹅", 500)];
+        let e = with_english(&dict, &[("change", "change", 2), ("changes", "changes", 2)]);
+        let t = texts(&e, "change");
+        assert_eq!(t[0], "嫦娥");
+        assert_eq!(t[2], "change");
+        assert!(!t.contains(&"changes".to_string()));
+    }
+
+    #[test]
+    fn 精确通时不足4字母只出档位0() {
+        let e = with_english(&[("a", "啊", 100), ("pi", "皮", 100), ("me", "么", 100)], &[("api", "API", 0), ("me", "me", 2)]);
+        assert_eq!(texts(&e, "api").iter().position(|t| t == "API"), Some(2));
+        assert!(!texts(&e, "me").contains(&"me".to_string()));
+    }
+
+    #[test]
+    fn 学过的英文由用户短语排首位且不重复() {
+        let mut e = with_english(&[("ku", "苦", 100), ("bei", "被", 100)], &[("kubernetes", "Kubernetes", 0)]);
+        e.learn("kube", "Kubernetes");
+        let c = e.candidates("kube");
+        assert_eq!(c[0].text, "Kubernetes");
+        assert_eq!(c[0].source, Source::English);
+        assert_eq!(c.iter().filter(|c| c.text == "Kubernetes").count(), 1);
+    }
+
+    #[test]
+    fn 未注入或空英文词表时候选不变() {
+        let dict = [("ni", "你", 100), ("hao", "好", 90), ("ni hao", "你好", 80)];
+        let plain = engine(&dict);
+        let mut with = engine(&dict);
+        with.set_english(English::default());
+        for input in ["nihao", "ni", "nih"] {
+            assert_eq!(plain.candidates(input), with.candidates(input));
+        }
+    }
+
+    #[test]
+    fn 回车学习_不通或残缺通且满4字母才记_满2次出现_forget后消失() {
+        let mut e = with_english(&[("zhe", "这", 100), ("chang e", "嫦娥", 100)], &[]);
+        assert!(!e.learn_raw("change"), "精确通不学");
+        assert!(!e.learn_raw("zhe"), "不足 4 字母不学");
+        assert!(e.learn_raw("zhegnshi"));
+        assert!(!texts(&e, "zhegnshi").contains(&"zhegnshi".to_string()));
+        assert!(e.learn_raw("zhegnshi"));
+        assert_eq!(texts(&e, "zhegnshi")[0], "zhegnshi");
+        e.forget("zhegnshi");
+        assert!(!texts(&e, "zhegnshi").contains(&"zhegnshi".to_string()));
     }
 }

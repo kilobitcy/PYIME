@@ -103,6 +103,7 @@ fn bucket(c: &Candidate) -> String {
         Source::Whole => "整段词",
         Source::Sentence => "整句",
         Source::Prefix => "前缀词",
+        Source::English => "英文",
     };
     if c.fuzzy > 0 { format!("{src}·模糊") } else { src.to_string() }
 }
