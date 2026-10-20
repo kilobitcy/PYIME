@@ -369,8 +369,11 @@ impl Engine {
             }
         }
         if !context.is_empty() {
+            // 用户在这个上文后选过其中某个首词时,只按个人搭配排,不计语法模型:
+            // 模型里查不到的搭配按 0 分,常用字(如"在")白拿近 10 分,个人搭配追不上
+            let mine = words.iter().any(|w| w.start == 0 && self.user.collocation(context, &w.text) > 0.0);
             for w in words.iter_mut().filter(|w| w.start == 0) {
-                w.score += self.gram_bonus(context, &w.text);
+                w.score += if mine { self.user.collocation(context, &w.text) } else { self.gram_bonus(context, &w.text) };
             }
         }
         words
