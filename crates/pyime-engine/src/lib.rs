@@ -1,6 +1,7 @@
 pub mod bigram;
 pub mod dict;
 pub mod engine;
+pub mod english;
 pub mod fuzzy;
 pub mod gram;
 pub mod pinyin;
