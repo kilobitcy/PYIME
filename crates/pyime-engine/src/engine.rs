@@ -408,25 +408,39 @@ fn place_english(en: &English, input: &str, cover: Cover, out: &mut Vec<Candidat
     }
     let (exact, more) = en.lookup(input);
     match cover {
-        Cover::None => insert_english(out, 0, input, exact.iter().chain(&more).take(EN_UNPARSED)),
-        Cover::Partial => {
-            insert_english(out, 0, input, exact.iter().take(EN_PARTIAL_EXACT));
-            insert_english(out, EN_SLOT, input, more.iter().filter(|h| h.tier == TIER_CUSTOM).take(EN_PARTIAL_COMPLETE));
+        Cover::None => {
+            insert_english(out, 0, input, exact.iter().chain(&more), EN_UNPARSED);
         }
-        Cover::Exact => insert_english(out, EN_SLOT, input, exact.iter().filter(|h| input.len() >= EN_EXACT_MIN || h.tier == TIER_CUSTOM).take(1)),
+        Cover::Partial => {
+            // 档位 0 的完全匹配排前部;其他档位的完全匹配与档位 0 补全一起放第 3 位起。
+            let k = insert_english(out, 0, input, exact.iter().filter(|h| h.tier == TIER_CUSTOM), EN_PARTIAL_EXACT);
+            let rest = exact.iter().filter(|h| h.tier != TIER_CUSTOM).chain(more.iter().filter(|h| h.tier == TIER_CUSTOM));
+            // 前部已插 k 条时,英文补全前至少留 1 条中文。
+            insert_english(out, EN_SLOT.max(k + 1), input, rest, EN_PARTIAL_COMPLETE);
+        }
+        Cover::Exact => {
+            let hits = exact.iter().filter(|h| input.len() >= EN_EXACT_MIN || h.tier == TIER_CUSTOM);
+            insert_english(out, EN_SLOT, input, hits, 1);
+        }
     }
 }
 
-/// 从下标 `at`(超出则接末尾)起依次插入英文候选,已有同文字的跳过。
-fn insert_english<'a>(out: &mut Vec<Candidate>, at: usize, input: &str, hits: impl Iterator<Item = &'a Hit<'a>>) {
+/// 从下标 `at`(超出则接末尾)起依次插入至多 `max` 条英文候选,已有同文字的跳过且不计数;返回实际插入条数。
+fn insert_english<'a>(out: &mut Vec<Candidate>, at: usize, input: &str, hits: impl Iterator<Item = &'a Hit<'a>>, max: usize) -> usize {
     let mut i = at.min(out.len());
+    let mut n = 0;
     for h in hits {
+        if n >= max {
+            break;
+        }
         if out.iter().any(|c| c.text == h.word) {
             continue;
         }
         out.insert(i, Candidate { text: h.word.to_string(), consumed: input.len(), fuzzy: 0, pairs: 0, cuts: Vec::new(), parts: Vec::new(), source: Source::English });
         i += 1;
+        n += 1;
     }
+    n
 }
 
 /// 在 [0, far] 上做束搜索 Viterbi,返回至多 `SENTENCES` 条拆成 ≥2 个词的整句(得分从高到低)。
@@ -867,5 +881,43 @@ mod tests {
         assert_eq!(texts(&e, "zhegnshi")[0], "zhegnshi");
         e.forget("zhegnshi");
         assert!(!texts(&e, "zhegnshi").contains(&"zhegnshi".to_string()));
+    }
+
+    #[test]
+    fn 残缺通时非档位0的完全匹配不抢首位_落第3位() {
+        let e = with_english(&[("ku", "苦", 100), ("bei", "被", 100)], &[("kube", "kube", 2)]);
+        let t = texts(&e, "kube");
+        assert_eq!(t[2], "kube");
+        assert!(t[..2].iter().all(|s| !s.is_ascii()));
+    }
+
+    #[test]
+    fn 残缺通时档位0完全匹配占2条_补全接在第一条中文之后() {
+        let e = with_english(
+            &[("ku", "苦", 100), ("bei", "被", 100)],
+            &[("kube", "Kube", 0), ("kube", "KUBE", 0), ("kubernetes", "Kubernetes", 0)],
+        );
+        let t = texts(&e, "kube");
+        assert_eq!(&t[..2], ["Kube", "KUBE"]);
+        assert!(!t[2].is_ascii(), "下标 2 为中文");
+        assert_eq!(t[3], "Kubernetes");
+    }
+
+    #[test]
+    fn 不通时英文与已有候选同文字_仍出满3条() {
+        // 词典里有文字为 Playwright 的前缀词;英文的同文字补全被跳过,不占 3 条名额。
+        let en = [("pawxyz", "Playwright", 0), ("pawxy", "pawxy", 2), ("pawxyz", "pawxyz", 2), ("pawxys", "pawxys", 2)];
+        let e = with_english(&[("pa", "Playwright", 100)], &en);
+        let t = texts(&e, "pawxy");
+        assert_eq!(t.iter().filter(|s| ["pawxy", "pawxyz", "pawxys"].contains(&s.as_str())).count(), 3, "{t:?}");
+    }
+
+    #[test]
+    fn 学过整段短语后变精确通_补全不再出现() {
+        // 有意行为:学过即按精确通处理,档位 0 补全不再出。
+        let mut e = with_english(&[("ku", "苦", 100), ("bei", "被", 100)], &[("kubernetes", "Kubernetes", 0)]);
+        assert!(texts(&e, "kube").contains(&"Kubernetes".to_string()));
+        e.learn("kube", "苦被");
+        assert!(!texts(&e, "kube").contains(&"Kubernetes".to_string()));
     }
 }

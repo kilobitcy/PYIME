@@ -57,7 +57,8 @@ pub fn parse_rime(text: &str) -> Vec<(String, String)> {
 
 /// 自带/用户词表:一行 `词` 或 `词⇥键`,`#` 注释;无键时键 = 词去空格转小写。返回 (键, 词)。
 pub fn parse_list(text: &str) -> Vec<(String, String)> {
-    text.lines()
+    text.trim_start_matches('\u{feff}')
+        .lines()
         .map(|l| l.trim_end_matches('\r'))
         .filter(|l| !l.trim().is_empty() && !l.starts_with('#'))
         .filter_map(|l| {
@@ -247,5 +248,10 @@ mod tests {
         assert!(e.forget("zhegnshi"));
         assert!(!e.forget("zhegnshi"));
         assert!(e.lookup("zhegnshi").0.is_empty());
+    }
+
+    #[test]
+    fn 解析时剥掉_utf8_bom() {
+        assert_eq!(parse_list("\u{feff}subagent\n"), vec![s("subagent", "subagent")]);
     }
 }
