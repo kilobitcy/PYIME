@@ -638,3 +638,55 @@ fn 撤回日志仍只记候选自身四元组() {
     assert_eq!(items[0].as_array().unwrap().len(), 4);
     assert_eq!(items[0][1], "你我");
 }
+
+/// 小写字母串 → 对应的虚拟键码序列。
+fn letters(s: &str) -> Vec<i64> {
+    s.bytes().map(|b| i64::from(b.to_ascii_uppercase())).collect()
+}
+
+#[test]
+fn 回车原样上屏的串满2次出现在候选首位_并记日志() {
+    let mut s = session();
+    crate::inputlog::take_captured();
+    for _ in 0..2 {
+        press(&mut s, &letters("zhegnshi"));
+        assert_eq!(key(&mut s, "onKeyDown", VK_RETURN)["commitString"], "zhegnshi");
+    }
+    let logs = crate::inputlog::take_captured();
+    assert_eq!(logs.iter().filter(|l| l["enter_raw"] == "zhegnshi" && l["counted"] == true).count(), 2);
+    let r = press(&mut s, &letters("zhegnshi"));
+    assert_eq!(r["candidateList"][0], "zhegnshi");
+}
+
+#[test]
+fn 回车不学_精确通_不足4字母_分段选过词() {
+    let mut s = session();
+    crate::inputlog::take_captured();
+    for _ in 0..2 {
+        press(&mut s, &letters("nihao"));
+        key(&mut s, "onKeyDown", VK_RETURN);
+        press(&mut s, &letters("zhg"));
+        key(&mut s, "onKeyDown", VK_RETURN);
+        type_pick(&mut s, &letters("nizhegnshi"), "你");
+        assert_eq!(key(&mut s, "onKeyDown", VK_RETURN)["commitString"], "你zhegnshi");
+    }
+    let logs = crate::inputlog::take_captured();
+    let raws: Vec<&Value> = logs.iter().filter(|l| l.get("enter_raw").is_some()).collect();
+    assert_eq!(raws.len(), 4, "分段选过词后回车不记 enter_raw");
+    assert!(raws.iter().all(|l| l["counted"] == false));
+    let r = press(&mut s, &letters("zhegnshi"));
+    assert!(!r["candidateList"].as_array().is_some_and(|c| c.iter().any(|t| t == "zhegnshi")));
+}
+
+#[test]
+fn 回车学会的英文串可用ctrl_shift_数字删除() {
+    let mut s = session();
+    for _ in 0..2 {
+        press(&mut s, &letters("zhegnshi"));
+        key(&mut s, "onKeyDown", VK_RETURN);
+    }
+    let r = press(&mut s, &letters("zhegnshi"));
+    assert_eq!(r["candidateList"][0], "zhegnshi");
+    let r = pkc(&mut s, "onKeyDown", 49, true, true);
+    assert!(!r["candidateList"].as_array().is_some_and(|c| c.iter().any(|t| t == "zhegnshi")));
+}

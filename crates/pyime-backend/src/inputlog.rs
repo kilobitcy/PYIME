@@ -61,6 +61,11 @@ pub fn cancel(input: &str, top: &[String]) {
     write(json!({ "cancel": input, "top": top }));
 }
 
+/// 回车原样上屏拼音串(本次组字未分段选过词):`counted` 表示是否计入英文回车学习。
+pub fn enter_raw(input: &str, counted: bool) {
+    write(json!({ "enter_raw": input, "counted": counted }));
+}
+
 #[cfg(test)]
 thread_local! {
     static CAPTURED: std::cell::RefCell<Vec<Value>> = const { std::cell::RefCell::new(Vec::new()) };

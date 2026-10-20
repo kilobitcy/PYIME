@@ -452,7 +452,13 @@ impl Session {
             _ if mapped.is_some() => commit = self.punctuate(mapped.unwrap(), was_digit),
             VK_SPACE if self.cands.is_empty() => commit = Some(self.flush_raw()),
             VK_SPACE => commit = self.select(self.cursor),
-            VK_RETURN => commit = Some(self.flush_raw()),
+            VK_RETURN => {
+                if self.pending.is_empty() && !self.input.is_empty() {
+                    let counted = self.ime.learn_raw(&self.input);
+                    crate::inputlog::enter_raw(&self.input, counted);
+                }
+                commit = Some(self.flush_raw());
+            }
             VK_ESCAPE => {
                 self.log_cancel();
                 self.flush_raw();

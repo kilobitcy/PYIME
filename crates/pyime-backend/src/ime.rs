@@ -1,6 +1,7 @@
 //! 全进程共享的输入法状态:引擎(含词典与用户学习数据)及用户数据存盘。
 use crate::log;
 use pyime_engine::dict::{Dict, DictBuilder};
+use pyime_engine::english::{parse_compiled, parse_list, English, TIER_CUSTOM};
 use pyime_engine::engine::{Candidate, Engine, Lesson};
 use pyime_engine::fuzzy::FuzzyConfig;
 use pyime_engine::gram::Gram;
@@ -12,6 +13,7 @@ use std::rc::Rc;
 pub struct Ime {
     engine: RefCell<Engine>,
     user_path: Option<PathBuf>,
+    en_learned_path: Option<PathBuf>,
     /// 测试用:记录"模拟按键"而不真的发送。
     #[cfg(test)]
     pressed: RefCell<Vec<u16>>,
@@ -61,6 +63,36 @@ fn user_path() -> Option<PathBuf> {
     std::env::var_os("LOCALAPPDATA").map(|p| PathBuf::from(p).join("PYIME").join("user.txt"))
 }
 
+/// 英文词表随安装包放在 `server.exe` 同目录。
+fn en_path() -> Option<PathBuf> {
+    Some(std::env::current_exe().ok()?.parent()?.join("pyime.en"))
+}
+
+/// 用户数据目录 `%LOCALAPPDATA%\PYIME` 下的文件。
+fn local_file(name: &str) -> Option<PathBuf> {
+    std::env::var_os("LOCALAPPDATA").map(|p| PathBuf::from(p).join("PYIME").join(name))
+}
+
+/// 英文词表:安装目录 `pyime.en` + 用户 `en.txt`(档位 0),再读回车学习计数;缺失的来源跳过。
+fn load_english(learned: Option<&PathBuf>) -> English {
+    let mut items = match en_path().map(|p| (std::fs::read_to_string(&p), p)) {
+        Some((Ok(t), _)) => parse_compiled(&t),
+        Some((Err(e), p)) => {
+            log::line(&format!("读取英文词表 {p:?} 失败: {e}"));
+            Vec::new()
+        }
+        None => Vec::new(),
+    };
+    if let Some(t) = local_file("en.txt").and_then(|p| std::fs::read_to_string(p).ok()) {
+        items.extend(parse_list(&t).into_iter().map(|(k, w)| (k, w, TIER_CUSTOM)));
+    }
+    let mut en = English::new(items);
+    if let Some(t) = learned.and_then(|p| std::fs::read_to_string(p).ok()) {
+        en.import_raw(&t);
+    }
+    en
+}
+
 fn load_dict() -> Dict {
     let loaded = dict_path().and_then(|p| match std::fs::read(&p) {
         Ok(b) => Dict::from_bytes(b).map_err(|e| log::line(&format!("词典 {p:?} 无效: {e}"))).ok(),
@@ -83,18 +115,20 @@ impl Ime {
                 Err(e) => log::line(&format!("语法模型 {p:?} 无效: {e}")),
             }
         }
+        let en_learned_path = local_file("en_learned.txt");
+        engine.set_english(load_english(en_learned_path.as_ref()));
         let user_path = user_path();
         if let Some(text) = user_path.as_ref().and_then(|p| std::fs::read_to_string(p).ok()) {
             engine.set_user(UserModel::import(&text));
         }
         log::line(&format!("引擎就绪,耗时 {:?}", t.elapsed()));
-        Rc::new(Ime { engine: RefCell::new(engine), user_path, #[cfg(test)] pressed: RefCell::new(Vec::new()) })
+        Rc::new(Ime { engine: RefCell::new(engine), user_path, en_learned_path, #[cfg(test)] pressed: RefCell::new(Vec::new()) })
     }
 
     /// 测试用:不读盘、不存盘。
     #[cfg(test)]
     pub fn with_engine(engine: Engine) -> Rc<Ime> {
-        Rc::new(Ime { engine: RefCell::new(engine), user_path: None, pressed: RefCell::new(Vec::new()) })
+        Rc::new(Ime { engine: RefCell::new(engine), user_path: None, en_learned_path: None, pressed: RefCell::new(Vec::new()) })
     }
 
     /// 测试用:当前用户学习数据的存盘文本。
@@ -148,6 +182,27 @@ impl Ime {
         let mut engine = self.engine.borrow_mut();
         engine.forget(text);
         self.save(&engine);
+        self.save_english(&engine);
+    }
+
+    /// 回车原样上屏了 `input`:引擎判定可学则记一次并存盘;返回是否记了。
+    pub fn learn_raw(&self, input: &str) -> bool {
+        let mut engine = self.engine.borrow_mut();
+        let counted = engine.learn_raw(input);
+        if counted {
+            self.save_english(&engine);
+        }
+        counted
+    }
+
+    fn save_english(&self, engine: &Engine) {
+        let (Some(path), Some(en)) = (&self.en_learned_path, engine.english()) else { return };
+        if let Some(dir) = path.parent() {
+            let _ = std::fs::create_dir_all(dir);
+        }
+        if let Err(e) = std::fs::write(path, en.export_raw()) {
+            log::line(&format!("保存英文学习失败: {e}"));
+        }
     }
 
     fn save(&self, engine: &Engine) {
