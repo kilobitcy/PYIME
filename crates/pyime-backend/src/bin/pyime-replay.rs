@@ -1,6 +1,7 @@
 //! 回放 `input-log.jsonl`:按日志顺序重放每次选词,统计选中项在候选里的名次,并边放边学习。
-//! 用法:pyime-replay <pyime.dict> <input-log.jsonl> [--gram <pyime.gram>] [--fuzzy-penalty <x>] [-v]
+//! 用法:pyime-replay <pyime.dict> <input-log.jsonl> [--gram <pyime.gram>] [--en <pyime.en>] [--fuzzy-penalty <x>] [-v]
 use pyime_engine::dict::Dict;
+use pyime_engine::english::{parse_compiled, English};
 use pyime_engine::engine::{Engine, Lesson};
 use pyime_engine::fuzzy::FuzzyConfig;
 use pyime_engine::gram::Gram;
@@ -9,17 +10,18 @@ use std::collections::HashMap;
 
 fn main() -> Result<(), String> {
     let mut pos = Vec::new();
-    let (mut gram, mut verbose, mut penalty) = (None, false, None);
+    let (mut gram, mut en, mut verbose, mut penalty) = (None, None, false, None);
     let mut args = std::env::args().skip(1);
     while let Some(a) = args.next() {
         match a.as_str() {
             "--gram" => gram = args.next(),
+            "--en" => en = args.next(),
             "--fuzzy-penalty" => penalty = args.next().and_then(|v| v.parse::<f64>().ok()),
             "-v" => verbose = true,
             _ => pos.push(a),
         }
     }
-    let [dict, log] = pos.as_slice() else { return Err("用法: pyime-replay <pyime.dict> <input-log.jsonl> [--gram <pyime.gram>] [--fuzzy-penalty <x>] [-v]".into()) };
+    let [dict, log] = pos.as_slice() else { return Err("用法: pyime-replay <pyime.dict> <input-log.jsonl> [--gram <pyime.gram>] [--en <pyime.en>] [--fuzzy-penalty <x>] [-v]".into()) };
     let read = |p: &str| std::fs::read(p).map_err(|e| format!("读取 {p} 失败: {e}"));
     let mut engine = Engine::new(Dict::from_bytes(read(dict)?)?, FuzzyConfig::default());
     if let Some(g) = gram {
@@ -27,6 +29,10 @@ fn main() -> Result<(), String> {
     }
     if let Some(p) = penalty {
         engine.set_fuzzy_penalty(p);
+    }
+    if let Some(p) = en {
+        let text = String::from_utf8(read(&p)?).map_err(|e| e.to_string())?;
+        engine.set_english(English::new(parse_compiled(&text)));
     }
     let text = String::from_utf8(read(log)?).map_err(|e| e.to_string())?;
     let (mut total, mut hit1, mut hit3, mut hit5, mut missing) = (0usize, 0usize, 0usize, 0usize, 0usize);
@@ -47,6 +53,11 @@ fn main() -> Result<(), String> {
         }
         if let Some(w) = v["forget"].as_str() {
             engine.forget(w);
+            continue;
+        }
+        // 回车原样上屏:按同样条件重建英文回车学习
+        if let Some(s) = v["enter_raw"].as_str() {
+            engine.learn_raw(s);
             continue;
         }
         let (Some(input), Some(typed), Some(chosen)) = (v["input"].as_str(), v["typed"].as_str(), v["text"].as_str()) else { continue };

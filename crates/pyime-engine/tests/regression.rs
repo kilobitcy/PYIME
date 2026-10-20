@@ -1,10 +1,12 @@
 //! 真实词典回归用例 (拼音, 期望候选, 允许的最大名次,从 1 起)。
 //! PYIME_DICT=/tmp/pyime.dict cargo test -p pyime-engine --release --test regression -- --ignored --nocapture
+//! 设 `PYIME_EN=installer/pyime.en` 时载入英文词表并追加英文用例。
 //! 输出按期望候选来源分桶的通过数;`PYIME_RANKS_OUT=文件` 存逐例名次,
 //! `PYIME_RANKS_BASE=文件` 与之前存的名次逐例比对(调参前后对照用)。
 use std::collections::BTreeMap;
 
 use pyime_engine::dict::Dict;
+use pyime_engine::english::{parse_compiled, English};
 use pyime_engine::engine::{Candidate, Engine, Source};
 use pyime_engine::fuzzy::FuzzyConfig;
 
@@ -50,6 +52,16 @@ const CASES: &[(&str, &str, usize)] = &[
     ("lan", "蓝", 1),           // 护住单字:高频 然(r=l)不得压过
 ];
 
+/// 载入英文词表(`PYIME_EN`)时追加的用例。
+const EN_CASES: &[(&str, &str, usize)] = &[
+    ("subagent", "subagent", 1),     // 残缺通:完全匹配的英文排首位
+    ("playwright", "Playwright", 1), // 不通:规范大小写
+    ("github", "GitHub", 1),
+    ("kube", "Kubernetes", 3),       // 残缺通:档位 0 补全插第 3 位
+    ("api", "API", 3),               // 精确通:档位 0 短词插第 3 位
+    ("change", "嫦娥", 1),           // 精确通:英文不抢中文首位
+];
+
 #[test]
 #[ignore]
 fn 回归用例() {
@@ -67,12 +79,17 @@ fn 回归用例() {
     if let Ok(w) = std::env::var("PYIME_GRAM_T") {
         engine.set_gram_threshold(w.parse().unwrap());
     }
+    let mut cases: Vec<(&str, &str, usize)> = CASES.to_vec();
+    if let Ok(p) = std::env::var("PYIME_EN") {
+        engine.set_english(English::new(parse_compiled(&std::fs::read_to_string(p).unwrap())));
+        cases.extend_from_slice(EN_CASES);
+    }
     let mut bad = Vec::new();
     // 按期望候选的来源分桶:桶名 → (用例数, 通过数)
     let mut buckets: BTreeMap<String, (usize, usize)> = BTreeMap::new();
     // 逐例名次(0 表示未召回),供与上一次运行逐例比对
     let mut ranks = String::new();
-    for &(input, want, max) in CASES {
+    for &(input, want, max) in &cases {
         let cands = engine.candidates(input);
         let pos = cands.iter().position(|c| c.text == want);
         let rank = pos.map(|i| i + 1);
@@ -94,7 +111,7 @@ fn 回归用例() {
     if let Ok(out) = std::env::var("PYIME_RANKS_OUT") {
         std::fs::write(out, &ranks).unwrap();
     }
-    println!("通过 {}/{}", CASES.len() - bad.len(), CASES.len());
+    println!("通过 {}/{}", cases.len() - bad.len(), cases.len());
     assert!(bad.is_empty(), "{}", bad.join("\n"));
 }
 
