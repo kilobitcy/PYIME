@@ -690,3 +690,31 @@ fn 回车学会的英文串可用ctrl_shift_数字删除() {
     let r = pkc(&mut s, "onKeyDown", 49, true, true);
     assert!(!r["candidateList"].as_array().is_some_and(|c| c.iter().any(|t| t == "zhegnshi")));
 }
+
+/// 取出本测试线程至今写出的 edit 行:(拼音, 首个候选)(同时清空捕获列表)。
+fn edits() -> Vec<(String, String)> {
+    crate::inputlog::take_captured()
+        .into_iter()
+        .filter_map(|l| Some((l["edit"].as_str()?.to_string(), l["top"][0].as_str().unwrap_or("").to_string())))
+        .collect()
+}
+
+#[test]
+fn 连续退格只记一次edit_重新打长后再删再记() {
+    let mut s = session();
+    edits();
+    press(&mut s, &[N, I, H, A, O]);
+    press(&mut s, &[VK_BACK, VK_BACK, VK_BACK]);
+    assert_eq!(edits(), [("nihao".to_string(), "你好".to_string())]);
+    press(&mut s, &[W, O]);
+    press(&mut s, &[VK_BACK, VK_BACK]);
+    assert_eq!(edits().into_iter().map(|e| e.0).collect::<Vec<_>>(), ["niwo"]);
+}
+
+#[test]
+fn 没有退格不记edit() {
+    let mut s = session();
+    edits();
+    type_pick(&mut s, &[N, I, H, A, O], "你好");
+    assert!(edits().is_empty());
+}

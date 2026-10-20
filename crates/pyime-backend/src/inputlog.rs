@@ -1,4 +1,4 @@
-//! 结构化输入日志:每个事件(选词、撤回、删除学习、放弃输入)一行 JSON,带时间戳与版本号,写 `%LOCALAPPDATA%\PYIME\input-log.jsonl`,仅本机。
+//! 结构化输入日志:每个事件(选词、撤回、删除学习、放弃输入、组字中删改)一行 JSON,带时间戳与版本号,写 `%LOCALAPPDATA%\PYIME\input-log.jsonl`,仅本机。
 //! 供 `pyime-replay` 离线回放,量化排序改动;与 `log.disabled` 共用同一关闭开关。
 use crate::log;
 use serde_json::{json, Value};
@@ -59,6 +59,11 @@ pub fn forget(input: &str, text: &str, noop: bool) {
 /// 放弃一次组字(Esc,或退格删光且无上屏):`input` 为本次组字中最长的拼音,`top` 为其当时的候选前几名。
 pub fn cancel(input: &str, top: &[String]) {
     write(json!({ "cancel": input, "top": top }));
+}
+
+/// 组字中拼音由增长转为删改(本轮第一次退格):`input` 为删前的拼音,`top` 为其当时的候选前几名。
+pub fn edit(input: &str, top: &[String]) {
+    write(json!({ "edit": input, "top": top }));
 }
 
 /// 回车原样上屏拼音串(本次组字未分段选过词):`counted` 表示是否计入英文回车学习。

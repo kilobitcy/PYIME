@@ -98,11 +98,13 @@ pub struct Session {
     back_counted: Option<Instant>,
     /// 本次组字中最长的拼音及其当时的候选前几名;放弃组字时写入日志。
     peak: Option<(String, Vec<String>)>,
+    /// 本轮删改已记过 `edit`(再打字母后清除),同一轮连续退格只记一次。
+    deleting: bool,
 }
 
 impl Session {
     pub fn new(ime: Rc<Ime>) -> Session {
-        Session { ime, pending: String::new(), input: String::new(), cands: Vec::new(), typed_all: String::new(), context: String::new(), segments: 0, page: 0, cursor: 0, english: false, shift_pending: false, learned: Vec::new(), last: None, after_digit: false, quote_open: [false; 2], closers: Vec::new(), injected: None, inject_echo: INJECT_ECHO, back_counted: None, peak: None }
+        Session { ime, pending: String::new(), input: String::new(), cands: Vec::new(), typed_all: String::new(), context: String::new(), segments: 0, page: 0, cursor: 0, english: false, shift_pending: false, learned: Vec::new(), last: None, after_digit: false, quote_open: [false; 2], closers: Vec::new(), injected: None, inject_echo: INJECT_ECHO, back_counted: None, peak: None, deleting: false }
     }
 
     fn composing(&self) -> bool {
@@ -468,6 +470,10 @@ impl Session {
             VK_PRIOR | VK_MINUS | VK_LBRACKET => self.turn_page(false),
             VK_NEXT | VK_EQUALS | VK_RBRACKET => self.turn_page(true),
             VK_BACK => {
+                if !std::mem::replace(&mut self.deleting, true) {
+                    let top: Vec<String> = self.cands.iter().take(crate::inputlog::TOP).map(|c| c.text.clone()).collect();
+                    crate::inputlog::edit(&self.input, &top);
+                }
                 self.input.pop();
                 if self.input.is_empty() {
                     if self.pending.is_empty() {
@@ -481,6 +487,7 @@ impl Session {
             _ if ctrl_down && digit_index(key).is_some() => self.forget(digit_index(key).unwrap()),
             _ if digit_index(key).is_some() => commit = self.select(digit_index(key).unwrap()),
             _ => {
+                self.deleting = false;
                 self.input.push((key as u8 as char).to_ascii_lowercase());
                 self.refresh();
             }
