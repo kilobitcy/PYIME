@@ -36,7 +36,7 @@
 仅针对当前待转换段 `input`(全小写字母)。按引擎内部 `Word` 判三态:
 
 - **精确通**:存在吃满 `input` 的整段词或整句,且其中没有残缺音节词(`partial`);模糊词允许。
-- **残缺通**:吃满 `input` 的候选都含残缺音节词(如 `subagent`、`kube`、`xiaom`、`api`、`react`)。
+- **残缺通**:吃满 `input` 的候选都含残缺音节词(如 `subagent`、`kube`、`xiaom`)。
 - **不通**:没有吃满 `input` 的中文候选(如 `playwright`、`css`)。
 
 英文候选:完全匹配 = 键等于 `input`;补全 = 键以 `input` 开头且更长,要求 `input` ≥ 4 字母。
@@ -45,10 +45,10 @@
 |---|---|---|---|
 | 不通 | 出 | 各档都出 | 英文排最前,合计至多 3 条,其后接中文 |
 | 残缺通 | 出,排第 1 | 只出档位 0,至多 2 条 | 补全插在第 3 位起 |
-| 精确通 | `input` ≥ 4 字母时出 1 条,插第 3 位 | 不出 | 中文不足 2 条则接末尾 |
+| 精确通 | `input` ≥ 4 字母或该词为档位 0 时出 1 条,插第 3 位 | 不出 | 中文不足 2 条则接末尾 |
 
 - 示例:`subagent` → subagent 首位;`kube` → 苦被、苦、Kubernetes;`xiaom` 中文不受影响
-  (Xiaomi 非档位 0);`api` → API 首位;`change` → 嫦娥、…、change(第 3 位)。
+  (Xiaomi 非档位 0);`api`(a+pi 精确通)→ 啊飘、阿片、API;`change` → 嫦娥、唱歌、change(第 3 位)。
 - 英文之间排序:档位升序 → 完全匹配优先 → 词长升序 → 词表文件原序。
 - 学过的英文不另设规则:选中英文走现有 `learn(input, 词)`,下次由 `UserModel::matching` 作为用户短语
   (得分 18 起)自然排前,与中文"选过一次即翻盘"一致。与英文候选同文字时去重保留排在前的那条;
@@ -79,7 +79,7 @@
 - 后端单测:回车学习的各条件(`pending` 非空/精确通/< 4 字母/非回车均不学),2 次后出现,`forget` 后消失。
 - 评测链路:`regression.rs` 读 `PYIME_EN`、`pyime-replay` 加 `--en <pyime.en>` 载入英文词表,
   回放识别 `enter_raw` 重建回车学习;新增"英文"桶,用例 `subagent→subagent`、`playwright→Playwright`、
-  `github→GitHub`、`kube→Kubernetes`(≤3)、`change` 首位不变。现有各桶不退步,用 `PYIME_RANKS_BASE` 逐例比对。
+  `github→GitHub`、`kube→Kubernetes`(≤3)、`api→API`(≤3)、`change` 首位不变。现有各桶不退步,用 `PYIME_RANKS_BASE` 逐例比对。
 
 ## 6. 打包
 
