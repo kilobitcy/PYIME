@@ -35,8 +35,7 @@ const LOOSE_BEAM: usize = 8;
 pub const GRAM_THRESHOLD: f64 = 0.0;
 pub const GRAM_WEIGHT: f64 = 0.6;
 const MAX_CANDIDATES: usize = 60;
-/// 英文候选落位:拼音不通时英文合计至多几条;残缺通时完全匹配、档位 0 补全各至多几条。
-const EN_UNPARSED: usize = 3;
+/// 英文候选落位:残缺通时完全匹配、档位 0 补全各至多几条(拼音不通时不限)。
 const EN_PARTIAL_EXACT: usize = 2;
 const EN_PARTIAL_COMPLETE: usize = 2;
 /// 英文插入位置的下标(第 3 位)。
@@ -142,7 +141,8 @@ fn cover(words: &[Word], len: usize) -> Cover {
     let (mut exact, mut any) = (vec![false; len + 1], vec![false; len + 1]);
     exact[0] = true;
     any[0] = true;
-    let mut ws: Vec<&Word> = words.iter().filter(|w| w.end <= len).collect();
+    // 英文文字的词(选过的英文用户短语)不算拼音覆盖
+    let mut ws: Vec<&Word> = words.iter().filter(|w| w.end <= len && !w.text.is_ascii()).collect();
     ws.sort_by_key(|w| w.start);
     for w in ws {
         if any[w.start] {
@@ -422,7 +422,11 @@ fn place_english(en: &English, input: &str, cover: Cover, out: &mut Vec<Candidat
     let (exact, more) = en.lookup(input);
     match cover {
         Cover::None => {
-            insert_english(out, 0, input, exact.iter().chain(&more), EN_UNPARSED);
+            // 选过的英文(用户短语)留在最前;补全档位 0 在前,其余档位不分档按词长排。
+            let mut more = more;
+            more.sort_by_key(|h| (h.tier != TIER_CUSTOM, h.word.len()));
+            let at = out.iter().take_while(|c| c.text.is_ascii()).count();
+            insert_english(out, at, input, exact.iter().chain(&more), usize::MAX);
         }
         Cover::Partial => {
             // 档位 0 的完全匹配排前部;其他档位的完全匹配与档位 0 补全一起放第 3 位起。
@@ -834,12 +838,27 @@ mod tests {
     }
 
     #[test]
-    fn 拼音不通时英文排最前_合计至多3条() {
+    fn 拼音不通时英文排最前_全部列出() {
         let en = [("playwright", "Playwright", 0), ("playwright", "playwright", 2), ("playwrights", "playwrights", 2), ("playwriting", "playwriting", 2)];
         let e = with_english(&[("pa", "怕", 100)], &en);
         let c = e.candidates("playw");
-        assert_eq!(c.iter().map(|c| c.text.as_str()).collect::<Vec<_>>(), vec!["Playwright", "playwright", "playwrights"]);
+        assert_eq!(c.iter().map(|c| c.text.as_str()).collect::<Vec<_>>(), vec!["Playwright", "playwright", "playwrights", "playwriting"]);
         assert!(c.iter().all(|c| c.source == Source::English && c.consumed == 5 && c.cuts.is_empty()));
+    }
+
+    #[test]
+    fn 拼音不通时完全匹配在前_档位0补全次之_其余补全不分档按长度() {
+        let en = [("playstation", "PlayStation", 1), ("player", "player", 2), ("plays", "plays", 2), ("play", "play", 2), ("playwright", "Playwright", 0)];
+        let e = with_english(&[("pa", "怕", 100)], &en);
+        assert_eq!(texts(&e, "play"), ["play", "Playwright", "plays", "player", "PlayStation"]);
+    }
+
+    #[test]
+    fn 拼音不通时选过的英文排最前_其余照常全部列出() {
+        let en = [("player", "player", 2), ("plays", "plays", 2), ("play", "play", 2), ("playwright", "Playwright", 0)];
+        let mut e = with_english(&[("pa", "怕", 100)], &en);
+        e.learn("play", "player");
+        assert_eq!(texts(&e, "play"), ["player", "play", "Playwright", "plays"]);
     }
 
     #[test]
