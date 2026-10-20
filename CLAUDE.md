@@ -16,6 +16,7 @@ Windows 11 拼音输入法。目标:界面与功能像微信输入法一样简�
 - `crates/pyime-backend`:PIME 后端(`protocol`/`session`/`ime`/`log`/`register`);词典 `pyime.dict` 放在 `server.exe` 同目录,用户数据 `%LOCALAPPDATA%\PYIME\user.txt`。
 - `scripts/package.sh <版本>`:测试 + 交叉编译 + 编词典 + makensis 一条龙(rime-ice 默认在 /tmp/rime-ice)。
 - 调参观察:`PYIME_DICT=… cargo test -p pyime-engine --release --test real_engine -- --ignored --nocapture`(`PYIME_INPUTS` 指定拼音)。
+- 回归对照:`PYIME_DICT=$PWD/installer/pyime.dict PYIME_GRAM=/tmp/gram/pyime.gram cargo test -q -p pyime-engine --release --test regression -- --ignored --nocapture`;输出按期望候选来源(整段词/整句/前缀词,·模糊)分桶的通过数。调参前加 `PYIME_RANKS_OUT=/tmp/base.tsv` 存逐例名次,调参后加 `PYIME_RANKS_BASE=/tmp/base.tsv` 逐例比对(救回首位/跌出首位/其余变化)。
 
 ## Commands
 ```bash

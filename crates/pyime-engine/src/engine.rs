@@ -51,6 +51,16 @@ pub struct Candidate {
     /// 整句中经模糊匹配得到的完整词:(起, 止, 句中字位置, 词),起止为输入中的字节位置,
     /// 句中字位置为该词之前的字数。只有整句候选填写,供选中后逐词学习。
     pub parts: Vec<(usize, usize, usize, String)>,
+    /// 候选来源,供评测按来源分桶。
+    pub source: Source,
+}
+
+/// 候选来源:整段词(词典或用户短语吃满输入)、整句(Viterbi 拼装)、前缀词(只吃前一段)。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Source {
+    Whole,
+    Sentence,
+    Prefix,
 }
 
 impl Candidate {
@@ -293,7 +303,10 @@ impl Engine {
         let sents: Vec<Candidate> = scored.into_iter().map(|s| s.0).collect();
         let mut firsts: Vec<&Word> = words.iter().filter(|w| w.start == 0).collect();
         firsts.sort_by(|a, b| b.end.cmp(&a.end).then(b.score.total_cmp(&a.score)));
-        let as_cand = |w: &&Word| Candidate { text: w.text.clone(), consumed: w.end, fuzzy: w.fuzzy, pairs: w.pairs, cuts: w.cuts.clone(), parts: Vec::new() };
+        let as_cand = |w: &&Word| Candidate {
+            text: w.text.clone(), consumed: w.end, fuzzy: w.fuzzy, pairs: w.pairs, cuts: w.cuts.clone(), parts: Vec::new(),
+            source: if w.end == far { Source::Whole } else { Source::Prefix },
+        };
         let (whole, rest): (Vec<&Word>, Vec<&Word>) = firsts.into_iter().partition(|w| w.end == far);
         // 没有精确的整段词、整句完全精确且得分高于最佳整段词时,整句排最前;否则整句紧跟整段词
         let exact_whole = whole.iter().any(|w| w.fuzzy == 0);
@@ -362,7 +375,7 @@ fn sentences(words: &[Word], far: usize, bigram: &dyn Fn(&str, &str) -> f64) -> 
         if path.len() >= 2 && out.len() < BEAM && !out.iter().any(|c| c.0.text == text) {
             out.push(({
                 cuts.sort_unstable();
-                Candidate { text, consumed: far, fuzzy, pairs, cuts, parts: fuzzy_parts(&path) }
+                Candidate { text, consumed: far, fuzzy, pairs, cuts, parts: fuzzy_parts(&path), source: Source::Sentence }
             }, best[far][r].0, !best[far][r].4));
         }
     }
@@ -661,5 +674,13 @@ mod tests {
         assert_eq!(texts(&e, "zilei")[0], "之类");
         let e = engine(&[("si", "四", 1000), ("shi", "是", 16_000)]);
         assert_eq!(texts(&e, "si")[0], "四");
+    }
+
+    #[test]
+    fn 候选标注来源() {
+        let e = engine(&[("ni hao", "你好", 5000), ("ni", "你", 5000), ("hao", "好", 5000), ("ma", "吗", 5000)]);
+        assert_eq!(cand(&e, "nihao", "你好").source, Source::Whole);
+        assert_eq!(cand(&e, "nihaoma", "你好吗").source, Source::Sentence);
+        assert_eq!(cand(&e, "nihaoma", "你好").source, Source::Prefix);
     }
 }

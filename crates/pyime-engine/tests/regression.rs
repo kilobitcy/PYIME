@@ -1,7 +1,11 @@
 //! 真实词典回归用例 (拼音, 期望候选, 允许的最大名次,从 1 起)。
-//! PYIME_DICT=/tmp/pyime.dict cargo test -p pyime-engine --release --test regression -- --ignored
+//! PYIME_DICT=/tmp/pyime.dict cargo test -p pyime-engine --release --test regression -- --ignored --nocapture
+//! 输出按期望候选来源分桶的通过数;`PYIME_RANKS_OUT=文件` 存逐例名次,
+//! `PYIME_RANKS_BASE=文件` 与之前存的名次逐例比对(调参前后对照用)。
+use std::collections::BTreeMap;
+
 use pyime_engine::dict::Dict;
-use pyime_engine::engine::Engine;
+use pyime_engine::engine::{Candidate, Engine, Source};
 use pyime_engine::fuzzy::FuzzyConfig;
 
 const CASES: &[(&str, &str, usize)] = &[
@@ -64,12 +68,71 @@ fn 回归用例() {
         engine.set_gram_threshold(w.parse().unwrap());
     }
     let mut bad = Vec::new();
+    // 按期望候选的来源分桶:桶名 → (用例数, 通过数)
+    let mut buckets: BTreeMap<String, (usize, usize)> = BTreeMap::new();
+    // 逐例名次(0 表示未召回),供与上一次运行逐例比对
+    let mut ranks = String::new();
     for &(input, want, max) in CASES {
-        let rank = engine.candidates(input).iter().position(|c| c.text == want).map(|i| i + 1);
-        if !rank.is_some_and(|r| r <= max) {
+        let cands = engine.candidates(input);
+        let pos = cands.iter().position(|c| c.text == want);
+        let rank = pos.map(|i| i + 1);
+        let pass = rank.is_some_and(|r| r <= max);
+        if !pass {
             bad.push(format!("{input} → {want}: 名次 {rank:?},要求 ≤{max}"));
         }
+        let b = buckets.entry(pos.map_or("未召回".into(), |i| bucket(&cands[i]))).or_default();
+        b.0 += 1;
+        b.1 += pass as usize;
+        ranks += &format!("{input}\t{want}\t{}\n", rank.unwrap_or(0));
+    }
+    for (name, (n, ok)) in &buckets {
+        println!("通过 {ok:>2}/{n:<2} {name}");
+    }
+    if let Ok(base) = std::env::var("PYIME_RANKS_BASE") {
+        diff(&std::fs::read_to_string(base).unwrap(), &ranks);
+    }
+    if let Ok(out) = std::env::var("PYIME_RANKS_OUT") {
+        std::fs::write(out, &ranks).unwrap();
     }
     println!("通过 {}/{}", CASES.len() - bad.len(), CASES.len());
     assert!(bad.is_empty(), "{}", bad.join("\n"));
+}
+
+fn bucket(c: &Candidate) -> String {
+    let src = match c.source {
+        Source::Whole => "整段词",
+        Source::Sentence => "整句",
+        Source::Prefix => "前缀词",
+    };
+    if c.fuzzy > 0 { format!("{src}·模糊") } else { src.to_string() }
+}
+
+/// 逐例比对两次运行的名次:分开报告救回、弄坏与其余名次变化(按名次比,不看要求的上限)。
+fn diff(base: &str, now: &str) {
+    let old: BTreeMap<(&str, &str), usize> = base
+        .lines()
+        .filter_map(|l| {
+            let f: Vec<&str> = l.split('\t').collect();
+            Some(((*f.first()?, *f.get(1)?), f.get(2)?.parse().ok()?))
+        })
+        .collect();
+    let (mut saved, mut broken, mut moved) = (Vec::new(), Vec::new(), Vec::new());
+    for l in now.lines() {
+        let f: Vec<&str> = l.split('\t').collect();
+        let r: usize = f[2].parse().unwrap();
+        let Some(&o) = old.get(&(f[0], f[1])) else { continue };
+        let line = format!("  {} → {}: {o} → {r}", f[0], f[1]);
+        match (o == 1, r == 1) {
+            (false, true) => saved.push(line),
+            (true, false) => broken.push(line),
+            _ if o != r => moved.push(line),
+            _ => {}
+        }
+    }
+    println!("与基线比对(名次 0 = 未召回):救回首位 {},跌出首位 {},其余变化 {}", saved.len(), broken.len(), moved.len());
+    for (title, v) in [("救回首位", &saved), ("跌出首位", &broken), ("其余变化", &moved)] {
+        if !v.is_empty() {
+            println!("{title}:\n{}", v.join("\n"));
+        }
+    }
 }
