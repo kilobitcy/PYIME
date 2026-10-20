@@ -42,6 +42,25 @@ pub fn is_syllable(s: &str) -> bool {
     table().contains(s)
 }
 
+/// 全部合法音节的全部非空前缀。
+fn prefixes() -> &'static HashSet<&'static str> {
+    static P: OnceLock<HashSet<&'static str>> = OnceLock::new();
+    P.get_or_init(|| table().iter().flat_map(|s| (1..=s.len()).map(move |n| &s[..n])).collect())
+}
+
+/// `input[prev..pos]` 为一个音节、下一段从 `pos` 起时,这处切分是否"抢"了前一音节本可吞下的字母:
+/// 下一音节以 a/o/e 开头且前一音节带上该字母仍是某音节的开头(xi|an、li|ang、ji|e);
+/// 或下一段是句末残缺字母(`partial`),并入前一音节恰成完整音节(da|n、zhan|g)。
+pub fn steals(input: &str, prev: usize, pos: usize, partial: bool) -> bool {
+    if prev >= pos || pos >= input.len() {
+        return false;
+    }
+    if partial {
+        return is_syllable(&input[prev..]);
+    }
+    matches!(input.as_bytes()[pos], b'a' | b'o' | b'e') && prefixes().contains(&input[prev..=pos])
+}
+
 /// 统一 ü 的写法:`lue`/`nue` 与 `lve`/`nve` 同音,词库(rime-ice)用后者,输入两种都接受。
 pub fn canonical(s: &str) -> &str {
     match s {
@@ -69,6 +88,19 @@ mod tests {
         assert_eq!(syllables_at("xian", 0), ["xi", "xia", "xian"]);
         assert_eq!(syllables_at("xian", 2), ["a", "an"]);
         assert_eq!(syllables_at("zhuang", 0), ["zhu", "zhua", "zhuan", "zhuang"]);
+    }
+
+    #[test]
+    fn 抢音切分() {
+        assert!(steals("xian", 0, 2, false), "xi|an");
+        assert!(steals("liang", 0, 2, false), "li|ang");
+        assert!(steals("jie", 0, 2, false), "ji|e");
+        assert!(steals("dan", 0, 2, true), "da|n");
+        assert!(steals("zhang", 0, 4, true), "zhan|g");
+        assert!(!steals("fangan", 0, 4, false), "fang|an 不抢");
+        assert!(!steals("keneng", 0, 2, false), "ke|neng 下一音节非元音开头");
+        assert!(!steals("wanan", 0, 3, false), "wan|an");
+        assert!(!steals("xian", 0, 4, false), "句末无下一段");
     }
 
     #[test]

@@ -3,7 +3,7 @@ use crate::dict::Dict;
 use crate::english::{English, Hit, TIER_CUSTOM};
 use crate::gram::Gram;
 use crate::fuzzy::{partial, variants, FuzzyConfig};
-use crate::pinyin::{is_syllable, syllables_at};
+use crate::pinyin::{is_syllable, steals, syllables_at};
 use crate::user::UserModel;
 
 /// 多字词每次模糊替换的惩罚(自然对数域,约等于词频缩小 e^2.5 ≈ 12 倍)。
@@ -13,6 +13,8 @@ const SINGLE_CHAR_FUZZY_EXTRA: f64 = 0.5;
 /// 整句里每多一个词的代价,使"长词"优于"拆成单字"。
 /// 末尾残缺音节(只打了开头)的惩罚,使同长度时完整音节的词优先。
 const PARTIAL_PENALTY: f64 = 3.0;
+/// 每处"抢音"切分(xi|an、da|n,见 `pinyin::steals`)的惩罚。
+const SPLIT_PENALTY: f64 = 8.0;
 /// 词典外的用户短语(整句选过的)基础得分,再加学习加分。
 const USER_PHRASE_BASE: f64 = 7.0;
 /// 单字词频(rime-ice 里按字累计)量级高于词,折扣后再与词比较。
@@ -99,6 +101,8 @@ struct Word {
     cuts: Vec<usize>,
     /// 末尾残缺音节凑出来的词,不算"精确"。
     partial: bool,
+    /// 最后一个音节的起点(用户短语无切分,取 `end`),供判断与下一词之间是否抢音。
+    last: usize,
     /// 用户曾为这段拼音直接选过该词:模糊得来也按精确参与整句分档。
     learned: bool,
 }
@@ -110,12 +114,16 @@ impl Word {
     }
 }
 
-/// 沿切分格累积的模糊状态:次数、个人偏好折扣、用到的规则位。
+/// 沿切分格累积的状态:模糊次数、个人偏好折扣、用到的规则位、抢音处数,以及上一音节起点。
 #[derive(Clone, Copy, Default)]
 struct Acc {
     fuzzy: u8,
     discount: f64,
     pairs: u16,
+    /// 词内抢音切分的处数。
+    splits: u8,
+    /// 词内上一音节的起点(尚无音节时为词首)。
+    prev: usize,
 }
 
 /// 中文候选吃满输入的情况,决定英文候选落位。
@@ -269,7 +277,7 @@ impl Engine {
 
     /// 再走一个音节:累加模糊次数、规则位,以及这些规则的个人偏好折扣。
     fn step(&self, acc: Acc, count: u8, pairs: u16) -> Acc {
-        Acc { fuzzy: acc.fuzzy + count, discount: acc.discount + self.user.fuzzy_discount(pairs), pairs: acc.pairs | pairs }
+        Acc { fuzzy: acc.fuzzy + count, discount: acc.discount + self.user.fuzzy_discount(pairs), pairs: acc.pairs | pairs, ..acc }
     }
 
     /// 末尾没打完的字母按音节开头匹配,词在输入末尾结束。
@@ -285,11 +293,12 @@ impl Engine {
                 continue;
             }
             let next = if key.is_empty() { syl.to_string() } else { format!("{key} {syl}") };
-            let a = self.step(acc, c, m);
+            let mut a = self.step(acc, c, m);
+            a.splits += u8::from(!key.is_empty() && steals(input, acc.prev, pos, true));
             for e in self.top_entries(&next) {
                 let bonus = self.user.bonus(&input[start..], &e.word);
-                let score = f64::from(e.weight.max(1)).ln() - self.penalty(key.is_empty()) * f64::from(a.fuzzy) + a.discount - PARTIAL_PENALTY + bonus - if key.is_empty() { SINGLE_CHAR_DISCOUNT } else { 0.0 };
-                out.push(Word { start, end: input.len(), text: e.word, score, fuzzy: a.fuzzy, pairs: a.pairs, cuts: cuts.to_vec(), partial: true, learned: false });
+                let score = f64::from(e.weight.max(1)).ln() - self.penalty(key.is_empty()) * f64::from(a.fuzzy) + a.discount - SPLIT_PENALTY * f64::from(a.splits) - PARTIAL_PENALTY + bonus - if key.is_empty() { SINGLE_CHAR_DISCOUNT } else { 0.0 };
+                out.push(Word { start, end: input.len(), text: e.word, score, fuzzy: a.fuzzy, pairs: a.pairs, cuts: cuts.to_vec(), partial: true, learned: false, last: pos });
             }
         }
     }
@@ -304,16 +313,17 @@ impl Engine {
                 if !self.dict.has_prefix(&next) {
                     continue;
                 }
-                let a = self.step(acc, c, m);
+                let mut a = self.step(acc, c, m);
+                a.splits += u8::from(depth > 0 && steals(input, acc.prev, pos, false));
                 for e in self.top_entries(&next) {
                     let bonus = self.user.bonus(&input[start..end], &e.word);
                     let learned = a.fuzzy > 0 && self.user.chose(&input[start..end], &e.word);
-                    let score = f64::from(e.weight.max(1)).ln() - self.penalty(depth == 0) * f64::from(a.fuzzy) + a.discount + bonus - if depth == 0 { SINGLE_CHAR_DISCOUNT } else { 0.0 };
-                    out.push(Word { start, end, text: e.word, score, fuzzy: a.fuzzy, pairs: a.pairs, cuts: cuts.clone(), partial: false, learned });
+                    let score = f64::from(e.weight.max(1)).ln() - self.penalty(depth == 0) * f64::from(a.fuzzy) + a.discount - SPLIT_PENALTY * f64::from(a.splits) + bonus - if depth == 0 { SINGLE_CHAR_DISCOUNT } else { 0.0 };
+                    out.push(Word { start, end, text: e.word, score, fuzzy: a.fuzzy, pairs: a.pairs, cuts: cuts.clone(), partial: false, learned, last: pos });
                 }
                 if depth + 1 < MAX_SYLLABLES {
                     cuts.push(end);
-                    self.grow(input, start, end, &next, a, depth + 1, cuts, out);
+                    self.grow(input, start, end, &next, Acc { prev: pos, ..a }, depth + 1, cuts, out);
                     cuts.pop();
                 }
             }
@@ -328,7 +338,7 @@ impl Engine {
     /// 同 `candidates`,`context` 是光标前已上屏的文字,用于首词的搭配加分。
     pub fn candidates_after(&self, input: &str, context: &str) -> Vec<Candidate> {
         let words = self.words(input, context);
-        let mut out = self.assemble(&words);
+        let mut out = self.assemble(input, &words);
         if let Some(en) = &self.english {
             place_english(en, input, cover(&words, input.len()), &mut out);
         }
@@ -351,11 +361,11 @@ impl Engine {
             for s in syllables_at(input, a) {
                 reach[a + s.len()] = true;
             }
-            self.grow(input, a, a, "", Acc::default(), 0, &mut Vec::new(), &mut words);
+            self.grow(input, a, a, "", Acc { prev: a, ..Acc::default() }, 0, &mut Vec::new(), &mut words);
         }
         for (typed, text, bonus) in self.user.matching(input) {
             if !words.iter().any(|w| w.start == 0 && w.end == typed.len() && w.text == text) {
-                words.push(Word { start: 0, end: typed.len(), text: text.to_string(), score: USER_PHRASE_BASE + bonus, fuzzy: 0, pairs: 0, cuts: Vec::new(), partial: false, learned: false });
+                words.push(Word { start: 0, end: typed.len(), text: text.to_string(), score: USER_PHRASE_BASE + bonus, fuzzy: 0, pairs: 0, cuts: Vec::new(), partial: false, learned: false, last: typed.len() });
             }
         }
         if !context.is_empty() {
@@ -366,10 +376,10 @@ impl Engine {
         words
     }
 
-    fn assemble(&self, words: &[Word]) -> Vec<Candidate> {
+    fn assemble(&self, input: &str, words: &[Word]) -> Vec<Candidate> {
         let Some(far) = words.iter().map(|w| w.end).max() else { return Vec::new() };
         let bigram = |ctx: &str, w: &str| self.gram_bonus(ctx, w);
-        let scored = sentences(words, far, &bigram);
+        let scored = sentences(input, words, far, &bigram);
         // 学过的模糊词只影响整句之间的分档(.2);置前只看第一条真正无模糊的精确整句的得分,
         // 免得学过模糊词的整句占首位后,精确整句不再参与判断、低频整段模糊词反被顶到第一
         let top_sentence = scored.iter().find(|s| s.2 && s.0.fuzzy == 0).map(|s| s.1);
@@ -445,7 +455,8 @@ fn insert_english<'a>(out: &mut Vec<Candidate>, at: usize, input: &str, hits: im
 
 /// 在 [0, far] 上做束搜索 Viterbi,返回至多 `SENTENCES` 条拆成 ≥2 个词的整句(得分从高到低)。
 /// `bigram(上文, 词)` 给相邻词的搭配加分。
-fn sentences(words: &[Word], far: usize, bigram: &dyn Fn(&str, &str) -> f64) -> Vec<(Candidate, f64, bool)> {
+/// 相邻两词之间若是抢音切分(见 `pinyin::steals`),另扣 `SPLIT_PENALTY`。
+fn sentences(input: &str, words: &[Word], far: usize, bigram: &dyn Fn(&str, &str) -> f64) -> Vec<(Candidate, f64, bool)> {
     // best[pos] = 到达 pos 的前 BEAM 条路径:(得分, 词下标, 前驱位置上的名次, 路径末尾几个字)
     let mut best: Vec<Vec<(f64, usize, usize, String, bool)>> = vec![Vec::new(); far + 1];
     let mut order: Vec<usize> = (0..words.len()).filter(|&i| words[i].end <= far).collect();
@@ -457,7 +468,8 @@ fn sentences(words: &[Word], far: usize, bigram: &dyn Fn(&str, &str) -> f64) -> 
             next.push((w.score - WORD_COST, i, 0, tail(&w.text), w.loose()));
         } else {
             for (r, p) in best[w.start].iter().enumerate() {
-                let total = p.0 + w.score - WORD_COST + bigram(&p.3, &w.text);
+                let split = steals(input, words[p.1].last, w.start, w.partial && w.cuts.is_empty());
+                let total = p.0 + w.score - WORD_COST + bigram(&p.3, &w.text) - if split { SPLIT_PENALTY } else { 0.0 };
                 next.push((total, i, r, tail(&format!("{}{}", p.3, w.text)), p.4 || w.loose()));
             }
         }
@@ -790,6 +802,18 @@ mod tests {
         assert_eq!(texts(&e, "zilei")[0], "之类");
         let e = engine(&[("si", "四", 1000), ("shi", "是", 16_000)]);
         assert_eq!(texts(&e, "si")[0], "四");
+    }
+
+    #[test]
+    fn 抢音切分降权_完整音节优先() {
+        // 词内(li|ang → 立案)、词间(da + 句末残缺 n → 大脑的"脑")都扣抢音惩罚
+        let e = engine(&[("liang", "两", 1000), ("li an", "立案", 20_000)]);
+        assert_eq!(texts(&e, "liang")[0], "两");
+        let e = engine(&[("dan", "但", 1000), ("da nao", "大脑", 20_000), ("da", "大", 1_000_000), ("nao", "脑", 1_000_000)]);
+        assert_eq!(texts(&e, "dan")[0], "但");
+        // 不抢音的元音开头切分(fang|an)不受影响
+        let e = engine(&[("fang an", "方案", 1000), ("fan gan", "反感", 900)]);
+        assert_eq!(texts(&e, "fangan")[0], "方案");
     }
 
     #[test]
