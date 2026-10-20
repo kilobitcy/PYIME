@@ -74,6 +74,18 @@ fn local_file(name: &str) -> Option<PathBuf> {
 }
 
 /// 英文词表:安装目录 `pyime.en` + 用户 `en.txt`(档位 0),再读回车学习计数;缺失的来源跳过。
+/// 读可选文本文件:不存在静默跳过,其他错误记日志后跳过。
+fn read_optional(p: &std::path::Path) -> Option<String> {
+    match std::fs::read_to_string(p) {
+        Ok(t) => Some(t),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
+        Err(e) => {
+            log::line(&format!("读取 {p:?} 失败: {e}"));
+            None
+        }
+    }
+}
+
 fn load_english(learned: Option<&PathBuf>) -> English {
     let mut items = match en_path().map(|p| (std::fs::read_to_string(&p), p)) {
         Some((Ok(t), _)) => parse_compiled(&t),
@@ -83,11 +95,11 @@ fn load_english(learned: Option<&PathBuf>) -> English {
         }
         None => Vec::new(),
     };
-    if let Some(t) = local_file("en.txt").and_then(|p| std::fs::read_to_string(p).ok()) {
+    if let Some(t) = local_file("en.txt").and_then(|p| read_optional(&p)) {
         items.extend(parse_list(&t).into_iter().map(|(k, w)| (k, w, TIER_CUSTOM)));
     }
     let mut en = English::new(items);
-    if let Some(t) = learned.and_then(|p| std::fs::read_to_string(p).ok()) {
+    if let Some(t) = learned.and_then(|p| read_optional(p)) {
         en.import_raw(&t);
     }
     en
