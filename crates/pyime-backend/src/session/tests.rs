@@ -58,7 +58,7 @@ fn 字母键被接管并出候选() {
     assert_eq!(r["candidateList"], json!(["你", "泥", "尼", "拟", "逆", "腻"]));
     assert_eq!(r["customizeUI"]["candPerRow"], 6);
     assert_eq!(r["customizeUI"]["candFontName"], "Microsoft YaHei UI");
-    assert_eq!(r["customizeUI"]["candFontSize"], 16);
+    assert_eq!(r["customizeUI"]["candFontSize"], 12);
 }
 
 #[test]

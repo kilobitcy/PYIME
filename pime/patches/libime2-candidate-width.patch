@@ -1,0 +1,215 @@
+diff --git a/src/CandidateWindow.cpp b/src/CandidateWindow.cpp
+index 90e70ff..36e18e0 100644
+--- a/src/CandidateWindow.cpp
++++ b/src/CandidateWindow.cpp
+@@ -36,11 +36,12 @@ CandidateWindow::CandidateWindow(TextService* service, EditSession* session):
+     ImeWindow(service),
+     shown_(false),
+     candPerRow_(1),
+-    textWidth_(0),
+     itemHeight_(0),
+     currentSel_(0),
+     hasResult_(false),
+     useCursor_(true),
++    selKeyFont_(NULL),
++    selKeyOffsetY_(0),
+     selKeyWidth_(0) {
+ 
+     if(service->isImmersive()) { // windows 8 app mode
+@@ -59,6 +60,8 @@ CandidateWindow::CandidateWindow(TextService* service, EditSession* session):
+ }
+ 
+ CandidateWindow::~CandidateWindow(void) {
++    if(selKeyFont_)
++        ::DeleteObject(selKeyFont_);
+ }
+ 
+ // ITfUIElement
+@@ -217,19 +220,10 @@ void CandidateWindow::onPaint(WPARAM wp, LPARAM lp) {
+     }
+ 
+     // paint items
+-    int col = 0;
+-    int x = margin_, y = margin_;
+     for(int i = 0, n = items_.size(); i < n; ++i) {
+-        paintItem(hDC, i, x, y);
+-        ++col; // go to next column
+-        if(col >= candPerRow_) {
+-            col = 0;
+-            x = margin_;
+-            y += itemHeight_ + rowSpacing_;
+-        }
+-        else {
+-            x += colSpacing_ + selKeyWidth_ + textWidth_;
+-        }
++        RECT rect;
++        itemRect(i, rect);
++        paintItem(hDC, i, rect.left, rect.top);
+     }
+     SelectObject(hDC, oldFont);
+     EndPaint(hwnd_, &ps);
+@@ -244,48 +238,55 @@ void CandidateWindow::recalculateSize() {
+     int height = 0;
+     int width = 0;
+     selKeyWidth_ = 0;
+-    textWidth_ = 0;
++    textWidths_.assign(items_.size(), 0);
+     itemHeight_ = 0;
+ 
+     HGDIOBJ oldFont = ::SelectObject(hDC, font_);
+-    vector<wstring>::const_iterator it;
++    TEXTMETRIC tm;
++    ::GetTextMetrics(hDC, &tm);
++    // 间距参照微信输入法,按字号(em)换算以适配 DPI:四周留白 1/2 字,
++    // 候选之间约 1.1 字,序号与候选间 1/4 字;序号字号为候选的 0.8 倍
++    int em = tm.tmHeight - tm.tmInternalLeading;
++    margin_ = em / 2;
++    colSpacing_ = em * 11 / 10;
++    rowSpacing_ = em / 3;
++    LOGFONT lf;
++    ::GetObject(font_, sizeof(lf), &lf);
++    lf.lfHeight = lf.lfHeight * 4 / 5;
++    if(selKeyFont_)
++        ::DeleteObject(selKeyFont_);
++    selKeyFont_ = ::CreateFontIndirect(&lf);
++    ::SelectObject(hDC, selKeyFont_);
++    TEXTMETRIC selKeyTm;
++    ::GetTextMetrics(hDC, &selKeyTm);
++    selKeyOffsetY_ = tm.tmAscent - selKeyTm.tmAscent; // 序号与候选基线对齐
+     for(int i = 0, n = items_.size(); i < n; ++i) {
+         SIZE selKeySize;
+-        int lineHeight = 0;
+-        // the selection key string
+-        wchar_t selKey[] = L"?. ";
+-        selKey[0] = selKeys_[i];
+-        ::GetTextExtentPoint32W(hDC, selKey, 3, &selKeySize);
+-        if(selKeySize.cx > selKeyWidth_)
+-            selKeyWidth_ = selKeySize.cx;
++        wchar_t selKey = selKeys_[i];
++        ::GetTextExtentPoint32W(hDC, &selKey, 1, &selKeySize);
++        selKeyWidth_ = max(selKeyWidth_, int(selKeySize.cx) + em / 4);
++    }
++    ::SelectObject(hDC, font_);
++    for(int i = 0, n = items_.size(); i < n; ++i) {
+ 
+         // the candidate string
+         SIZE candidateSize;
+         wstring& item = items_.at(i);
+         ::GetTextExtentPoint32W(hDC, item.c_str(), item.length(), &candidateSize);
+-        if(candidateSize.cx > textWidth_)
+-            textWidth_ = candidateSize.cx;
+-        int itemHeight = max(candidateSize.cy, selKeySize.cy);
+-        if(itemHeight > itemHeight_)
+-            itemHeight_ = itemHeight;
++        textWidths_[i] = candidateSize.cx;
++        if(candidateSize.cy > itemHeight_)
++            itemHeight_ = candidateSize.cy;
+     }
+     ::SelectObject(hDC, oldFont);
+     ::ReleaseDC(hwnd(), hDC);
+ 
+-    if(items_.size() <= candPerRow_) {
+-        width = items_.size() * (selKeyWidth_ + textWidth_);
+-        width += colSpacing_ * (items_.size() - 1);
+-        width += margin_ * 2;
+-        height = itemHeight_ + margin_ * 2;
+-    }
+-    else {
+-        width = candPerRow_ * (selKeyWidth_ + textWidth_);
+-        width += colSpacing_ * (candPerRow_ - 1);
+-        width += margin_ * 2;
+-        int rowCount = items_.size() / candPerRow_;
+-        if(items_.size() % candPerRow_)
+-            ++rowCount;
+-        height = itemHeight_ * rowCount + rowSpacing_ * (rowCount - 1) + margin_ * 2;
++    // 窗口宽度取最宽一行的右边界
++    width = height = margin_ * 2;
++    for(int i = 0, n = items_.size(); i < n; ++i) {
++        RECT rect;
++        itemRect(i, rect);
++        width = max(width, int(rect.right) + margin_);
++        height = max(height, int(rect.bottom) + margin_);
+     }
+     resize(width, height);
+ }
+@@ -349,6 +350,7 @@ void CandidateWindow::setCurrentSel(int sel) {
+ void CandidateWindow::clear() {
+     items_.clear();
+     selKeys_.clear();
++    textWidths_.clear();
+     currentSel_ = 0;
+     hasResult_ = false;
+ }
+@@ -361,20 +363,19 @@ void CandidateWindow::setUseCursor(bool use) {
+ 
+ void CandidateWindow::paintItem(HDC hDC, int i,  int x, int y) {
+     RECT textRect = {x, y, 0, y + itemHeight_};
+-    wchar_t selKey[] = L"?. ";
+-    selKey[0] = selKeys_[i];
++    wchar_t selKey = selKeys_[i];
+     textRect.right = textRect.left + selKeyWidth_;
+-    // FIXME: make the color of strings configurable.
+-    COLORREF selKeyColor = RGB(0, 0, 255);
+-    COLORREF oldColor = ::SetTextColor(hDC, selKeyColor);
+-    // paint the selection key
+-    ::ExtTextOut(hDC, textRect.left, textRect.top, ETO_OPAQUE, &textRect, selKey, 3, NULL);
++    // 序号:小一号、灰色(#888,同微信输入法)
++    COLORREF oldColor = ::SetTextColor(hDC, RGB(0x88, 0x88, 0x88));
++    HGDIOBJ oldFont = ::SelectObject(hDC, selKeyFont_);
++    ::ExtTextOut(hDC, textRect.left, textRect.top + selKeyOffsetY_, ETO_OPAQUE, &textRect, &selKey, 1, NULL);
++    ::SelectObject(hDC, oldFont);
+     ::SetTextColor(hDC, oldColor); // restore text color
+ 
+     // paint the candidate string
+     wstring& item = items_.at(i);
+     textRect.left += selKeyWidth_;
+-    textRect.right = textRect.left + textWidth_;
++    textRect.right = textRect.left + textWidths_[i];
+     // paint the candidate string
+     ::ExtTextOut(hDC, textRect.left, textRect.top, ETO_OPAQUE, &textRect, item.c_str(), item.length(), NULL);
+ 
+@@ -391,9 +392,12 @@ void CandidateWindow::itemRect(int i, RECT& rect) {
+     int row, col;
+     row = i / candPerRow_;
+     col = i % candPerRow_;
+-    rect.left = margin_ + col * (selKeyWidth_ + textWidth_ + colSpacing_);
++    // 同一行内,左边界 = 前面各候选自身宽度之和
++    rect.left = margin_;
++    for(int j = i - col; j < i; ++j)
++        rect.left += selKeyWidth_ + textWidths_[j] + colSpacing_;
+     rect.top = margin_ + row * (itemHeight_ + rowSpacing_);
+-    rect.right = rect.left + (selKeyWidth_ + textWidth_);
++    rect.right = rect.left + (selKeyWidth_ + textWidths_[i]);
+     rect.bottom = rect.top + itemHeight_;
+ }
+ 
+diff --git a/src/CandidateWindow.h b/src/CandidateWindow.h
+index 2ea3635..6645c34 100644
+--- a/src/CandidateWindow.h
++++ b/src/CandidateWindow.h
+@@ -68,6 +68,7 @@ public:
+     void add(std::wstring item, wchar_t selKey) {
+         items_.push_back(item);
+         selKeys_.push_back(selKey);
++        textWidths_.push_back(0); // 与 items_ 保持等长,宽度在 recalculateSize() 中计算
+     }
+ 
+     void clear();
+@@ -113,7 +114,7 @@ private:
+     BOOL shown_;
+ 
+     int selKeyWidth_;
+-    int textWidth_;
++    std::vector<int> textWidths_; // 每个候选按自身文字宽度排版,不再统一取最宽
+     int itemHeight_;
+     int candPerRow_;
+     int colSpacing_;
+@@ -123,6 +124,8 @@ private:
+     int currentSel_;
+     bool hasResult_;
+     bool useCursor_;
++    HFONT selKeyFont_; // 序号用的小号字体
++    int selKeyOffsetY_; // 序号相对候选的下移量,使两者基线对齐
+ };
+ 
+ }

@@ -30,7 +30,7 @@ const INJECT_ECHO: Duration = Duration::from_millis(300);
 const PAGE_SIZE: usize = 6;
 /// 候选窗字体与字号(PIME 只允许改这两项外观)。
 const CAND_FONT: &str = "Microsoft YaHei UI";
-const CAND_FONT_SIZE: i64 = 16;
+const CAND_FONT_SIZE: i64 = 12; // 按微信输入法截图实测换算(候选字宽为原 16 号的 0.76 倍)
 
 /// 数字键 1-9(主键盘或小键盘)对应的页内下标。
 fn digit_index(key: i64) -> Option<usize> {

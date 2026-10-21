@@ -9,7 +9,8 @@ Windows 11 拼音输入法。目标:界面与功能像微信输入法一样简�
 - Windows 前端:复用 PIME 1.3.0-stable(TSF 宿主;2.0.0-beta 在用户 Win11 上选词会崩宿主进程,见上游 issue #888/#904,不用),Rust 引擎作为后端进程,经 PIME 的 JSON 协议通信。
 - 词库:开源词库 + 词频起步;第二阶段训练 bigram 重排。完全离线。
 - 构建/发布:GitHub Actions 因账单锁定不可用(`release.yml` 保留待解锁);现走本机交叉编译(mingw-w64,目标 `x86_64-pc-windows-gnu`)+ `makensis` 出安装包,`gh release create` 手动发布。
-- 安装形态:附加安装包 `PYIME-<版本>-setup.exe`,装进已安装的官方 PIME **1.3.0-stable**(往其 `backends.json` 登记后端并重新 `regsvr32`)。
+- 安装形态:附加安装包 `PYIME-<版本>-setup.exe`,装进已安装的官方 PIME **1.3.0-stable**(往其 `backends.json` 登记后端并重新 `regsvr32`);同时把 PIME 的 `x64`/`x86\PIMETextService.dll` 换成补丁版(原版改名 `.orig` 备份,卸载还原;占用中的 DLL 靠改名替换,无需重启)。
+- 补丁版 PIME DLL:`pime/patches/`(mingw 可移植修补 + 候选按自身宽度排版、序号/间距参照微信)、`pime/tsf_compat.h`(mingw 缺的 TSF 接口,取自 windows-rs);`scripts/build-pime-dll.sh` 克隆上游 v1.3.0-stable 打补丁,mingw 交叉编译到 `target/pime/{x64,x86}`(`--baseline` 出不改排版的对照版)。实机验证包脚本在 `pime/test-kit/`。
 
 ## Project Layout
 - `crates/pyime-engine`:引擎(`dict` fst 词典、`rime` 词库导入、`pinyin` 音节表与切分格、`fuzzy` 10 对模糊音、`engine` 候选生成与整句 Viterbi、`user` 用户学习、`english` 英文词表与回车学习);`pyime-dict-build` 编译词典、`pyime-en-build` 编译英文词表 `pyime.en`(自带 IT 词表 `installer/en_it.txt`)。
@@ -63,7 +64,7 @@ Windows 11 拼音输入法。目标:界面与功能像微信输入法一样简�
 - 日志:0.x 默认开启,写 `%LOCALAPPDATA%\PYIME\log.txt`,建 `log.disabled` 关闭;含输入拼音原文,仅本机。
 
 ### 目标:尽量接近微信输入法(依据用户提供的微信设置截图,2026-10-13)
-- 候选窗:横排,每个候选带序号,当前高亮为实心绿色圆角块+白字,末尾有 ⌄ 展开按钮;候选字号可调,主题跟随系统。PIME 候选窗只能改字体/字号/每行个数/是否高亮,圆角与配色要等自写 TSF 前端。
+- 候选窗:横排,每个候选带序号,当前高亮为实心绿色圆角块+白字,末尾有 ⌄ 展开按钮;候选字号可调,主题跟随系统。PIME 协议只能改字体/字号/每行个数/是否高亮;外观改动改补丁版 DLL 的 `CandidateWindow`(已做:按自身宽度排版、序号灰色小一号无点号、间距按字号换算,字号 12;未做:绿色圆角高亮、圆角窗口与阴影)。
 - 中英文切换:**单击 Shift**(默认开);Ctrl 切换默认关;系统自带 Ctrl+空格。
 - 翻页:`-`/`=`(上/下翻,默认开)、`[`/`]`(默认开);`,`/`.` 与 Tab/Shift+Tab 默认关。
 - 候选选择:数字键;`;`/`'` 选第 2/3 位默认关;左右 Ctrl 选第 2/3 位默认关。

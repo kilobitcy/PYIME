@@ -8,6 +8,7 @@ try {
     if (Test-Path "$dst\server.exe") { [void](Run "$dst\server.exe" "--unregister `"$pime`"") }
     # 先 /u 清除含本输入法的 TSF 注册,再按更新后的 backends.json 重新注册。
     Reg-Dlls $pime $true
+    foreach ($a in Tsf-Arches) { Restore-TsfDll $pime $a }
     Reg-Dlls $pime $false
     if (Test-Path $dst) { Remove-Item -Recurse -Force $dst }
     Start-Process (Join-Path $pime 'PIMELauncher.exe')

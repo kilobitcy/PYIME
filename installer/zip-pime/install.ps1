@@ -15,6 +15,7 @@ try {
     Copy-Item -Force (Join-Path $PSScriptRoot 'ime.json') "$dst\input_methods\pyime"
     $code = Run "$dst\server.exe" "--register `"$pime`""
     if ($code -ne 0) { throw "登记 backends.json 失败(代码 $code)。" }
+    foreach ($a in Tsf-Arches) { Install-TsfDll $pime $a }
     Reg-Dlls $pime $false
     Start-Process (Join-Path $pime 'PIMELauncher.exe')
     Write-Host ''
