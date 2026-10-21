@@ -67,6 +67,19 @@ const CASES: &[(&str, &str, usize)] = &[
     ("qinqueren", "请确认", 4),   // 用户期望第 1:需学习 qin→请
     ("qingeichu", "请给出", 4),   // 同上
     ("qinlijie", "请理解", 4),    // 同上;抢音惩罚前 请里机饿 占满整句名额而未召回
+    // 整句精确/模糊按得分合排(2026-10-21 用户日志):模糊整句明显更好时不再整档排在精确拼凑之后
+    ("qinshikao", "请思考", 1),    // 原排 亲是靠 寝室靠 秦是靠 之后
+    ("binggaoshuwo", "并告诉我", 1),
+    ("liuchenzhong", "流程中", 1),
+    ("wobugangyu", "我不干预", 1),
+    ("douyaosoudong", "都要手动", 1),
+    ("kouyuca", "口语差", 1),
+    ("chongxiangmu", "从项目", 1),
+    ("nengjiansao", "能减少", 1),
+    ("guochenzhong", "过程中", 2),  // 只比 过沉重 低 0.5,不足精确领先分
+    ("woxiwan", "我希望", 2),
+    ("youxianzi", "有限制", 2),
+    ("zhuduihua", "主对话", 3),     // 代价:模糊的 组对话 排到精确的 住对话 主对话 之前
 ];
 
 /// 载入英文词表(`PYIME_EN`)时追加的用例。

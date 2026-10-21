@@ -26,6 +26,8 @@ const VK_RIGHT: i64 = 39;
 /// 间隔微秒级;自动连发的退格间隔 ≥ 30ms。窗口内的重复退格视为同一次按键。
 const BACK_DEDUP: Duration = Duration::from_millis(15);
 const INJECT_ECHO: Duration = Duration::from_millis(300);
+/// 组合用的 Shift(按住打大写)松开后,这么短时间内又按下的单击 Shift 视为误触,不切中英文。
+const SHIFT_GUARD: Duration = Duration::from_millis(300);
 /// 候选横排,每页个数(与微信输入法一致)。
 const PAGE_SIZE: usize = 6;
 /// 候选窗字体与字号(PIME 只允许改这两项外观)。
@@ -41,8 +43,10 @@ fn digit_index(key: i64) -> Option<usize> {
     }
 }
 
-/// 取末尾至多 3 个字,作为下一个词的上文。
+/// 取末尾至多 3 个字,作为下一个词的上文。英文字母不算上文:遇到即截断,
+/// 免得选过英文候选(test)后记下 est→编号 这类个人搭配。
 fn tail3(s: &str) -> String {
+    let s = s.rfind(|c: char| c.is_ascii_alphabetic()).map_or(s, |i| &s[i + 1..]);
     let n = s.chars().count();
     s.chars().skip(n.saturating_sub(3)).collect()
 }
@@ -82,6 +86,11 @@ pub struct Session {
     english: bool,
     /// Shift 按下后尚未按过其他键,此时松开即视为"单击 Shift"。
     shift_pending: bool,
+    /// 上一次作为组合键(按住期间按过其他键)的 Shift 松开的时刻。
+    shift_combo_up: Option<Instant>,
+    /// 本次 Shift 按下时离上次组合 Shift 松开太近,松开时不切换。
+    shift_misfire: bool,
+    shift_guard: Duration,
     /// 本次组词已做的学习。
     learned: Vec<Learned>,
     last: Option<Last>,
@@ -100,11 +109,16 @@ pub struct Session {
     peak: Option<(String, Vec<String>)>,
     /// 本轮删改已记过 `edit`(再打字母后清除),同一轮连续退格只记一次。
     deleting: bool,
+    /// 未组词时按住 Shift 放行给应用的大写字母(小写记),其后紧接着组字并回车时,
+    /// 只有一个字母(首字母大写的词,如 Johnson)才拼到回车学习的串前面。
+    caps: String,
+    /// 已计入 `caps` 且尚未抬起的字母键,libIME 重复调用 filterKeyDown 时不重复计。
+    caps_down: Option<i64>,
 }
 
 impl Session {
     pub fn new(ime: Rc<Ime>) -> Session {
-        Session { ime, pending: String::new(), input: String::new(), cands: Vec::new(), typed_all: String::new(), context: String::new(), segments: 0, page: 0, cursor: 0, english: false, shift_pending: false, learned: Vec::new(), last: None, after_digit: false, quote_open: [false; 2], closers: Vec::new(), injected: None, inject_echo: INJECT_ECHO, back_counted: None, peak: None, deleting: false }
+        Session { ime, pending: String::new(), input: String::new(), cands: Vec::new(), typed_all: String::new(), context: String::new(), segments: 0, page: 0, cursor: 0, english: false, shift_pending: false, shift_combo_up: None, shift_misfire: false, shift_guard: SHIFT_GUARD, learned: Vec::new(), last: None, after_digit: false, quote_open: [false; 2], closers: Vec::new(), injected: None, inject_echo: INJECT_ECHO, back_counted: None, peak: None, deleting: false, caps: String::new(), caps_down: None }
     }
 
     fn composing(&self) -> bool {
@@ -153,12 +167,15 @@ impl Session {
         let is_shift = VK_SHIFT_KEYS.contains(&key);
         match req["method"].as_str().unwrap_or("") {
             m @ ("filterKeyDown" | "onKeyDown") => {
+                if is_shift && !self.shift_pending {
+                    self.shift_misfire = self.shift_combo_up.is_some_and(|t| t.elapsed() < self.shift_guard);
+                }
                 self.shift_pending = is_shift;
                 let mapped = self.punct_for(req, key);
                 let wants = mapped.is_some() || self.wants_key(key, shift_down, ctrl_down);
                 if !wants {
                     // 同一次按键可能先后以 filterKeyDown、onKeyDown 到达,退格只在前者计数
-                    self.note_passthrough(key, shift_down, m == "filterKeyDown");
+                    self.note_passthrough(key, shift_down, ctrl_down, m == "filterKeyDown");
                 }
                 resp["return"] = json!(wants);
                 if wants && m == "onKeyDown" {
@@ -167,12 +184,27 @@ impl Session {
             }
             "filterKeyUp" | "onKeyUp" => {
                 resp["return"] = json!(false);
+                if self.caps_down == Some(key) {
+                    self.caps_down = None;
+                }
                 if key == VK_BACK {
                     self.back_counted = None;
                 }
-                if is_shift && std::mem::take(&mut self.shift_pending) && req["method"] == "filterKeyUp" {
-                    self.toggle_english(&mut resp);
+                if is_shift && req["method"] == "filterKeyUp" {
+                    if std::mem::take(&mut self.shift_pending) {
+                        if !self.shift_misfire {
+                            self.toggle_english(&mut resp);
+                        }
+                    } else {
+                        self.shift_combo_up = Some(Instant::now());
+                    }
                 }
+            }
+            // 应用强制结束了组字(切焦点、截图工具等):组字串已按原样留在应用里,丢掉会话里的拼音,
+            // 否则之后打的字母会接在旧拼音后面(日志里的 ocrclea)
+            "onCompositionTerminated" if req["forced"] == true && self.composing() => {
+                self.flush_raw();
+                resp["showCandidates"] = json!(false);
             }
             _ => {}
         }
@@ -198,11 +230,19 @@ impl Session {
 
     /// 应用收到的按键(输入法未接管)对"刚上屏"状态的影响:退格记为可能在撤销,
     /// Shift/Ctrl/Alt 与字母不影响,其他键说明用户接受了上屏结果。`count_back` 为假时退格不计数。
-    fn note_passthrough(&mut self, key: i64, shift_down: bool, count_back: bool) {
+    fn note_passthrough(&mut self, key: i64, shift_down: bool, ctrl_down: bool, count_back: bool) {
         if matches!(key, VK_LEFT | VK_RIGHT) && self.injected.is_some_and(|t| t.elapsed() < self.inject_echo) {
             return;
         }
         let modifier = VK_SHIFT_KEYS.contains(&key) || matches!(key, 17 | 18 | 20);
+        if (65..=90).contains(&key) && shift_down && !ctrl_down && !self.composing() {
+            if count_back && self.caps_down != Some(key) {
+                self.caps.push((key as u8 as char).to_ascii_lowercase());
+                self.caps_down = Some(key);
+            }
+        } else if !modifier {
+            self.caps.clear();
+        }
         if !modifier {
             self.after_digit = !shift_down && matches!(key, 48..=57 | 96..=105);
         }
@@ -456,8 +496,10 @@ impl Session {
             VK_SPACE => commit = self.select(self.cursor),
             VK_RETURN => {
                 if self.pending.is_empty() && !self.input.is_empty() {
-                    let counted = self.ime.learn_raw(&self.input);
-                    crate::inputlog::enter_raw(&self.input, counted);
+                    // 首字母大写的词:大写首字母已放行给应用,学习与日志按整词记
+                    let word = if self.caps.len() == 1 { format!("{}{}", self.caps, self.input) } else { self.input.clone() };
+                    let counted = self.ime.learn_raw(&word);
+                    crate::inputlog::enter_raw(&word, counted);
                 }
                 commit = Some(self.flush_raw());
             }
@@ -494,6 +536,9 @@ impl Session {
         }
         if let Some(text) = commit.filter(|t| !t.is_empty()) {
             resp["commitString"] = json!(text);
+        }
+        if !self.composing() {
+            self.caps.clear();
         }
         let shown = format!("{}{}", self.pending, self.display_input());
         resp["compositionString"] = json!(shown);

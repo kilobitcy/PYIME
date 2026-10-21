@@ -159,12 +159,31 @@ impl English {
     }
 
     /// 读回 `export_raw` 的结果;坏行跳过。
+    /// 旧版把首字母大写的词(大写字母已放行给应用)记成去掉首字母的残片(Johnson → ohnson),
+    /// 读回时把词表外的残片并到"某字母 + 残片"上:优先已学的整词,其次词表里的键。
     pub fn import_raw(&mut self, text: &str) {
         for (w, n) in text.lines().filter_map(|l| l.split_once('\t')) {
             if let (true, Ok(n)) = (valid_key(w), n.trim().parse::<u32>()) {
                 self.raw.insert(w.to_string(), n.min(MAX_COUNT));
             }
         }
+        let mut frags: Vec<String> = self.raw.keys().filter(|w| !self.has_key(w)).cloned().collect();
+        frags.sort();
+        for w in frags {
+            let whole = ('a'..='z').map(|c| format!("{c}{w}"));
+            let learned = whole.clone().filter_map(|k| self.raw.get(&k).map(|&n| (n, k))).max();
+            let Some(target) = learned.map(|(_, k)| k).or_else(|| whole.into_iter().find(|k| self.has_key(k))) else { continue };
+            if let Some(n) = self.raw.remove(&w) {
+                let t = self.raw.entry(target).or_insert(0);
+                *t = (*t + n).min(MAX_COUNT);
+            }
+        }
+    }
+
+    /// 词表里是否有键 `k`。
+    fn has_key(&self, k: &str) -> bool {
+        let i = self.entries.partition_point(|e| e.key.as_str() < k);
+        self.entries.get(i).is_some_and(|e| e.key == k)
     }
 }
 
@@ -248,6 +267,18 @@ mod tests {
         assert!(e.forget("zhegnshi"));
         assert!(!e.forget("zhegnshi"));
         assert!(e.lookup("zhegnshi").0.is_empty());
+    }
+
+    #[test]
+    fn 读回时把丢了大写首字母的残片并回整词() {
+        // 用户真实数据:Johnson/Claude/Upwork 的大写首字母曾被放行给应用,回车学到 ohnson、laude、pwork
+        let mut e = English::new(vec![("claude".into(), "Claude".into(), TIER_CUSTOM)]);
+        e.import_raw("ohnson\t10\njohnson\t2\nlaude\t1\npwork\t1\nupwork\t3\nrguo\t1\n");
+        assert_eq!(e.export_raw(), "claude\t1\njohnson\t12\nrguo\t1\nupwork\t4");
+        // 词表里有的词即使另有 c+词 也不并:lay 与 play 都是正常词
+        let mut e = English::new(vec![("lay".into(), "lay".into(), TIER_BASE)]);
+        e.import_raw("lay\t2\nplay\t2\n");
+        assert_eq!(e.export_raw(), "lay\t2\nplay\t2");
     }
 
     #[test]

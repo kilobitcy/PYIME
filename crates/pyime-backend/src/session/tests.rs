@@ -188,6 +188,28 @@ fn shift配合其他键不切换() {
 }
 
 #[test]
+fn 刚松开组合shift紧接着单击视为误触不切换() {
+    // 用户真实日志:按住 Shift 打完 SKILLS,松开约 150ms 后又碰了一下 Shift,被当成切到英文
+    let mut s = session();
+    key(&mut s, "filterKeyDown", 16);
+    key(&mut s, "filterKeyDown", N); // Shift+N
+    key(&mut s, "filterKeyUp", 16);
+    shift_click(&mut s);
+    assert_eq!(key(&mut s, "filterKeyDown", N)["return"], true);
+}
+
+#[test]
+fn 组合shift松开后隔一会儿单击仍切换() {
+    let mut s = session();
+    s.shift_guard = Duration::ZERO;
+    key(&mut s, "filterKeyDown", 16);
+    key(&mut s, "filterKeyDown", N);
+    key(&mut s, "filterKeyUp", 16);
+    shift_click(&mut s);
+    assert_eq!(key(&mut s, "filterKeyDown", N)["return"], false);
+}
+
+#[test]
 fn 组词中切英文把拼音原样上屏() {
     let mut s = session();
     press(&mut s, &[N, I]);
@@ -717,4 +739,76 @@ fn 没有退格不记edit() {
     edits();
     type_pick(&mut s, &[N, I, H, A, O], "你好");
     assert!(edits().is_empty());
+}
+
+/// 未组词时按住 Shift 敲一个字母:输入法放行,应用里直接出大写字母。
+fn shift_letter(s: &mut Session, code: i64) {
+    pkc(s, "filterKeyDown", code, true, false);
+    pkc(s, "filterKeyUp", code, true, false);
+}
+
+#[test]
+fn 首字母大写的英文词回车学整词_不学去掉首字母的残片() {
+    // 用户真实日志:Johnson 的 J 被放行给应用,其余 ohnson 组字后回车,曾把 ohnson 记进英文学习
+    let mut s = session();
+    crate::inputlog::take_captured();
+    for _ in 0..2 {
+        pkc(&mut s, "filterKeyDown", 74, true, false); // Shift+J
+        pkc(&mut s, "filterKeyDown", 74, true, false); // libIME 对同一次按键可能重复调用
+        pkc(&mut s, "filterKeyUp", 74, true, false);
+        press(&mut s, &letters("ohnson"));
+        assert_eq!(key(&mut s, "onKeyDown", VK_RETURN)["commitString"], "ohnson", "应用里已有 J,只上屏其余字母");
+    }
+    let logs = crate::inputlog::take_captured();
+    assert_eq!(logs.iter().filter(|l| l["enter_raw"] == "johnson").count(), 2, "{logs:?}");
+    let r = press(&mut s, &letters("johnson"));
+    assert_eq!(r["candidateList"][0], "johnson");
+    key(&mut s, "onKeyDown", VK_ESCAPE);
+    let r = press(&mut s, &letters("ohnson"));
+    assert!(!r["candidateList"].as_array().is_some_and(|c| c.iter().any(|t| t == "ohnson")));
+}
+
+#[test]
+fn 大写字母后隔了别的键或连打多个大写_回车不拼接() {
+    let mut s = session();
+    crate::inputlog::take_captured();
+    shift_letter(&mut s, 74);
+    key(&mut s, "filterKeyDown", VK_SPACE); // 放行给应用的空格
+    press(&mut s, &letters("ohnson"));
+    key(&mut s, "onKeyDown", VK_RETURN);
+    shift_letter(&mut s, 79); // O
+    shift_letter(&mut s, 67); // C
+    press(&mut s, &letters("rtest"));
+    key(&mut s, "onKeyDown", VK_RETURN);
+    let raws: Vec<String> = crate::inputlog::take_captured().iter().filter_map(|l| l["enter_raw"].as_str().map(String::from)).collect();
+    assert_eq!(raws, ["ohnson", "rtest"]);
+}
+
+#[test]
+fn 选了英文候选后上文不含英文字母() {
+    // 用户真实日志:选 test 后再打 bianhao,记下了 est→编号、st→编号、t→编号 的个人搭配
+    let mut s = session();
+    for _ in 0..2 {
+        press(&mut s, &letters("zhegnshi"));
+        key(&mut s, "onKeyDown", VK_RETURN);
+    }
+    press(&mut s, &letters("zhegnshi"));
+    assert_eq!(key(&mut s, "onKeyDown", VK_SPACE)["commitString"], "zhegnshi");
+    type_pick(&mut s, &[N, I], "你");
+    let e = s.ime.user_export();
+    assert!(!e.lines().any(|l| l.starts_with("@ng\t") && l.split('\t').nth(1).unwrap().bytes().any(|b| b.is_ascii_alphabetic())), "{e}");
+}
+
+#[test]
+fn 应用强制结束组字后清空拼音_不带到下次输入() {
+    // 用户真实日志:组字 ocr 时应用强制结束组字(forced=true),会话仍留着 ocr,之后打的字母接在后面
+    let mut s = session();
+    press(&mut s, &[N, I]);
+    s.handle(&json!({"method": "onCompositionTerminated", "forced": true, "seqNum": 9}));
+    assert_eq!(press(&mut s, &[H, A, O])["compositionString"], "hao");
+    // 正常上屏后的 forced=false 不影响组字
+    press(&mut s, &[VK_ESCAPE]);
+    press(&mut s, &[N, I]);
+    s.handle(&json!({"method": "onCompositionTerminated", "forced": false, "seqNum": 10}));
+    assert_eq!(press(&mut s, &[H, A, O])["compositionString"], "ni'hao");
 }

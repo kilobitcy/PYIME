@@ -1,8 +1,8 @@
 diff --git a/src/CandidateWindow.cpp b/src/CandidateWindow.cpp
-index 90e70ff..36e18e0 100644
+index 90e70ff..7d62dd3 100644
 --- a/src/CandidateWindow.cpp
 +++ b/src/CandidateWindow.cpp
-@@ -36,11 +36,12 @@ CandidateWindow::CandidateWindow(TextService* service, EditSession* session):
+@@ -36,11 +36,16 @@ CandidateWindow::CandidateWindow(TextService* service, EditSession* session):
      ImeWindow(service),
      shown_(false),
      candPerRow_(1),
@@ -13,10 +13,29 @@ index 90e70ff..36e18e0 100644
      useCursor_(true),
 +    selKeyFont_(NULL),
 +    selKeyOffsetY_(0),
++    itemPadX_(0),
++    itemPadY_(0),
++    cornerRadius_(0),
++    roundedByDwm_(false),
      selKeyWidth_(0) {
  
      if(service->isImmersive()) { // windows 8 app mode
-@@ -59,6 +60,8 @@ CandidateWindow::CandidateWindow(TextService* service, EditSession* session):
+@@ -56,9 +61,23 @@ CandidateWindow::CandidateWindow(TextService* service, EditSession* session):
+ 
+     HWND parent = service->compositionWindow(session);
+     create(parent, WS_POPUP|WS_CLIPCHILDREN, WS_EX_TOOLWINDOW|WS_EX_TOPMOST);
++
++    // Win11:请 DWM 给窗口圆角(弹出窗口默认不圆角,需显式请求,见微软文档 Apply rounded corners
++    // 示例 4)。动态取 DwmSetWindowAttribute,旧系统不支持该属性时返回失败,改为自绘 1px 边框。
++    if(HMODULE dwm = ::LoadLibraryW(L"dwmapi.dll")) {
++        typedef HRESULT (WINAPI *DwmSetWindowAttributeFn)(HWND, DWORD, LPCVOID, DWORD);
++        auto setAttr = (DwmSetWindowAttributeFn)::GetProcAddress(dwm, "DwmSetWindowAttribute");
++        const DWORD DWMWA_WINDOW_CORNER_PREFERENCE = 33, DWMWCP_ROUND = 2;
++        DWORD pref = DWMWCP_ROUND;
++        if(setAttr && hwnd_ && SUCCEEDED(setAttr(hwnd_, DWMWA_WINDOW_CORNER_PREFERENCE, &pref, sizeof(pref))))
++            roundedByDwm_ = true;
++        ::FreeLibrary(dwm);
++    }
  }
  
  CandidateWindow::~CandidateWindow(void) {
@@ -25,7 +44,35 @@ index 90e70ff..36e18e0 100644
  }
  
  // ITfUIElement
-@@ -217,19 +220,10 @@ void CandidateWindow::onPaint(WPARAM wp, LPARAM lp) {
+@@ -197,39 +216,21 @@ void CandidateWindow::onPaint(WPARAM wp, LPARAM lp) {
+     oldFont = (HFONT)SelectObject(hDC, font_);
+ 
+     GetClientRect(hwnd_,&rc);
+-    SetTextColor(hDC, GetSysColor(COLOR_WINDOWTEXT));
+-    SetBkColor(hDC, GetSysColor(COLOR_WINDOW));
+-
+-    // paint window background and border
+-    // draw a flat black border in Windows 8 app immersive mode
+-    // draw a 3d border in desktop mode
+-    if(isImmersive()) {
+-        HPEN pen = ::CreatePen(PS_SOLID, 3, RGB(0, 0, 0));
+-        HGDIOBJ oldPen = ::SelectObject(hDC, pen);
+-        ::Rectangle(hDC, rc.left, rc.top, rc.right, rc.bottom);
+-        ::SelectObject(hDC, oldPen);
+-        ::DeleteObject(pen);
+-    }
+-    else {
+-        // draw a 3d border in desktop mode
+-        ::FillSolidRect(ps.hdc, rc.left, rc.top, rc.right - rc.left, rc.bottom - rc.top, GetSysColor(COLOR_WINDOW));
+-        ::Draw3DBorder(hDC, &rc, GetSysColor(COLOR_3DFACE), 0);
++    ::SetBkMode(hDC, TRANSPARENT);
++
++    // 白底;Win11 由 DWM 画圆角与细边框,否则自绘 1px 浅灰边框
++    ::FillSolidRect(hDC, rc.left, rc.top, rc.right - rc.left, rc.bottom - rc.top, RGB(0xFF, 0xFF, 0xFF));
++    if(!roundedByDwm_) {
++        HBRUSH border = ::CreateSolidBrush(RGB(0xE5, 0xE5, 0xE5));
++        ::FrameRect(hDC, &rc, border);
++        ::DeleteObject(border);
      }
  
      // paint items
@@ -44,11 +91,11 @@ index 90e70ff..36e18e0 100644
 -        }
 +        RECT rect;
 +        itemRect(i, rect);
-+        paintItem(hDC, i, rect.left, rect.top);
++        paintItem(hDC, i, rect);
      }
      SelectObject(hDC, oldFont);
      EndPaint(hwnd_, &ps);
-@@ -244,48 +238,55 @@ void CandidateWindow::recalculateSize() {
+@@ -244,48 +245,60 @@ void CandidateWindow::recalculateSize() {
      int height = 0;
      int width = 0;
      selKeyWidth_ = 0;
@@ -60,12 +107,17 @@ index 90e70ff..36e18e0 100644
 -    vector<wstring>::const_iterator it;
 +    TEXTMETRIC tm;
 +    ::GetTextMetrics(hDC, &tm);
-+    // 间距参照微信输入法,按字号(em)换算以适配 DPI:四周留白 1/2 字,
-+    // 候选之间约 1.1 字,序号与候选间 1/4 字;序号字号为候选的 0.8 倍
++    // 尺寸参照微信输入法截图(em≈24px 时实测),按字号(em)换算以适配 DPI:
++    // 每个候选是一个块(选中时为绿色圆角块),块内左右留白 0.42em(10-11px)、上下共 0.25em(块高 39px);
++    // 块间距 0.67em(16px),块到窗口边 0.25em(6px),圆角半径 0.3em(7px);
++    // 序号与候选间 1/4 字,序号字号为候选的 0.8 倍
 +    int em = tm.tmHeight - tm.tmInternalLeading;
-+    margin_ = em / 2;
-+    colSpacing_ = em * 11 / 10;
-+    rowSpacing_ = em / 3;
++    itemPadX_ = em * 5 / 12;
++    itemPadY_ = em / 8;
++    cornerRadius_ = em * 3 / 10;
++    margin_ = em / 4;
++    colSpacing_ = em * 2 / 3;
++    rowSpacing_ = em / 4;
 +    LOGFONT lf;
 +    ::GetObject(font_, sizeof(lf), &lf);
 +    lf.lfHeight = lf.lfHeight * 4 / 5;
@@ -132,7 +184,7 @@ index 90e70ff..36e18e0 100644
      }
      resize(width, height);
  }
-@@ -349,6 +350,7 @@ void CandidateWindow::setCurrentSel(int sel) {
+@@ -349,6 +362,7 @@ void CandidateWindow::setCurrentSel(int sel) {
  void CandidateWindow::clear() {
      items_.clear();
      selKeys_.clear();
@@ -140,51 +192,84 @@ index 90e70ff..36e18e0 100644
      currentSel_ = 0;
      hasResult_ = false;
  }
-@@ -361,20 +363,19 @@ void CandidateWindow::setUseCursor(bool use) {
+@@ -359,42 +373,46 @@ void CandidateWindow::setUseCursor(bool use) {
+         ::InvalidateRect(hwnd_, NULL, TRUE);
+ }
  
- void CandidateWindow::paintItem(HDC hDC, int i,  int x, int y) {
-     RECT textRect = {x, y, 0, y + itemHeight_};
+-void CandidateWindow::paintItem(HDC hDC, int i,  int x, int y) {
+-    RECT textRect = {x, y, 0, y + itemHeight_};
 -    wchar_t selKey[] = L"?. ";
 -    selKey[0] = selKeys_[i];
-+    wchar_t selKey = selKeys_[i];
-     textRect.right = textRect.left + selKeyWidth_;
+-    textRect.right = textRect.left + selKeyWidth_;
 -    // FIXME: make the color of strings configurable.
 -    COLORREF selKeyColor = RGB(0, 0, 255);
 -    COLORREF oldColor = ::SetTextColor(hDC, selKeyColor);
 -    // paint the selection key
 -    ::ExtTextOut(hDC, textRect.left, textRect.top, ETO_OPAQUE, &textRect, selKey, 3, NULL);
-+    // 序号:小一号、灰色(#888,同微信输入法)
-+    COLORREF oldColor = ::SetTextColor(hDC, RGB(0x88, 0x88, 0x88));
-+    HGDIOBJ oldFont = ::SelectObject(hDC, selKeyFont_);
-+    ::ExtTextOut(hDC, textRect.left, textRect.top + selKeyOffsetY_, ETO_OPAQUE, &textRect, &selKey, 1, NULL);
-+    ::SelectObject(hDC, oldFont);
-     ::SetTextColor(hDC, oldColor); // restore text color
- 
-     // paint the candidate string
-     wstring& item = items_.at(i);
-     textRect.left += selKeyWidth_;
+-    ::SetTextColor(hDC, oldColor); // restore text color
+-
+-    // paint the candidate string
+-    wstring& item = items_.at(i);
+-    textRect.left += selKeyWidth_;
 -    textRect.right = textRect.left + textWidth_;
-+    textRect.right = textRect.left + textWidths_[i];
-     // paint the candidate string
-     ::ExtTextOut(hDC, textRect.left, textRect.top, ETO_OPAQUE, &textRect, item.c_str(), item.length(), NULL);
+-    // paint the candidate string
+-    ::ExtTextOut(hDC, textRect.left, textRect.top, ETO_OPAQUE, &textRect, item.c_str(), item.length(), NULL);
+-
+-    if(useCursor_ && i == currentSel_) { // invert the selected item
+-        int left = textRect.left; // - selKeyWidth_;
+-        int top = textRect.top;
+-        int width = textRect.right - left;
+-        int height = itemHeight_;
+-        ::BitBlt(hDC, left, top, width, itemHeight_, hDC, left, top, NOTSRCCOPY);
++void CandidateWindow::paintItem(HDC hDC, int i, const RECT& itemRc) {
++    bool selected = useCursor_ && i == currentSel_;
++    if(selected) { // 选中:微信绿 #00B176 实心圆角块,序号与文字转白
++        HBRUSH brush = ::CreateSolidBrush(RGB(0x00, 0xB1, 0x76));
++        HPEN pen = ::CreatePen(PS_SOLID, 1, RGB(0x00, 0xB1, 0x76));
++        HGDIOBJ oldBrush = ::SelectObject(hDC, brush);
++        HGDIOBJ oldPen = ::SelectObject(hDC, pen);
++        ::RoundRect(hDC, itemRc.left, itemRc.top, itemRc.right, itemRc.bottom, cornerRadius_ * 2, cornerRadius_ * 2);
++        ::SelectObject(hDC, oldPen);
++        ::SelectObject(hDC, oldBrush);
++        ::DeleteObject(pen);
++        ::DeleteObject(brush);
+     }
++    int x = itemRc.left + itemPadX_;
++    int y = itemRc.top + itemPadY_;
++    // 序号:小一号、灰色 #888(同微信输入法)
++    wchar_t selKey = selKeys_[i];
++    COLORREF oldColor = ::SetTextColor(hDC, selected ? RGB(0xFF, 0xFF, 0xFF) : RGB(0x88, 0x88, 0x88));
++    HGDIOBJ oldFont = ::SelectObject(hDC, selKeyFont_);
++    ::ExtTextOut(hDC, x, y + selKeyOffsetY_, 0, NULL, &selKey, 1, NULL);
++    ::SelectObject(hDC, oldFont);
++    // 候选文字 #333
++    ::SetTextColor(hDC, selected ? RGB(0xFF, 0xFF, 0xFF) : RGB(0x33, 0x33, 0x33));
++    wstring& item = items_.at(i);
++    ::ExtTextOut(hDC, x + selKeyWidth_, y, 0, NULL, item.c_str(), item.length(), NULL);
++    ::SetTextColor(hDC, oldColor); // restore text color
+ }
  
-@@ -391,9 +392,12 @@ void CandidateWindow::itemRect(int i, RECT& rect) {
+ void CandidateWindow::itemRect(int i, RECT& rect) {
      int row, col;
      row = i / candPerRow_;
      col = i % candPerRow_;
 -    rect.left = margin_ + col * (selKeyWidth_ + textWidth_ + colSpacing_);
-+    // 同一行内,左边界 = 前面各候选自身宽度之和
+-    rect.top = margin_ + row * (itemHeight_ + rowSpacing_);
+-    rect.right = rect.left + (selKeyWidth_ + textWidth_);
+-    rect.bottom = rect.top + itemHeight_;
++    // 返回候选块(含块内留白)。同一行内,左边界 = 前面各块自身宽度 + 块间距之和
++    int blockHeight = itemHeight_ + itemPadY_ * 2;
 +    rect.left = margin_;
 +    for(int j = i - col; j < i; ++j)
-+        rect.left += selKeyWidth_ + textWidths_[j] + colSpacing_;
-     rect.top = margin_ + row * (itemHeight_ + rowSpacing_);
--    rect.right = rect.left + (selKeyWidth_ + textWidth_);
-+    rect.right = rect.left + (selKeyWidth_ + textWidths_[i]);
-     rect.bottom = rect.top + itemHeight_;
++        rect.left += itemPadX_ * 2 + selKeyWidth_ + textWidths_[j] + colSpacing_;
++    rect.top = margin_ + row * (blockHeight + rowSpacing_);
++    rect.right = rect.left + itemPadX_ * 2 + selKeyWidth_ + textWidths_[i];
++    rect.bottom = rect.top + blockHeight;
  }
  
+ 
 diff --git a/src/CandidateWindow.h b/src/CandidateWindow.h
-index 2ea3635..6645c34 100644
+index 2ea3635..d2bfe66 100644
 --- a/src/CandidateWindow.h
 +++ b/src/CandidateWindow.h
 @@ -68,6 +68,7 @@ public:
@@ -195,6 +280,15 @@ index 2ea3635..6645c34 100644
      }
  
      void clear();
+@@ -103,7 +104,7 @@ public:
+ protected:
+     LRESULT wndProc(UINT msg, WPARAM wp , LPARAM lp);
+     void onPaint(WPARAM wp, LPARAM lp);
+-    void paintItem(HDC hDC, int i, int x, int y);
++    void paintItem(HDC hDC, int i, const RECT& itemRc);
+     void itemRect(int i, RECT& rect);
+ 
+ protected: // COM object should not be deleted directly. calling Release() instead.
 @@ -113,7 +114,7 @@ private:
      BOOL shown_;
  
@@ -204,12 +298,29 @@ index 2ea3635..6645c34 100644
      int itemHeight_;
      int candPerRow_;
      int colSpacing_;
-@@ -123,6 +124,8 @@ private:
+@@ -123,6 +124,12 @@ private:
      int currentSel_;
      bool hasResult_;
      bool useCursor_;
 +    HFONT selKeyFont_; // 序号用的小号字体
 +    int selKeyOffsetY_; // 序号相对候选的下移量,使两者基线对齐
++    int itemPadX_; // 候选块内左右留白
++    int itemPadY_; // 候选块内上下留白
++    int cornerRadius_; // 选中块圆角半径
++    bool roundedByDwm_; // Win11 DWM 已给窗口圆角(并画边框)
  };
  
  }
+diff --git a/src/Window.cpp b/src/Window.cpp
+index 587b3be..3304be6 100644
+--- a/src/Window.cpp
++++ b/src/Window.cpp
+@@ -79,7 +79,7 @@ bool Window::registerClass(HINSTANCE hinstance) {
+ 
+     WNDCLASSEX wc;
+     wc.cbSize         = sizeof(WNDCLASSEX);
+-    wc.style          = CS_IME; // FIXME: is this needed?
++    wc.style          = CS_IME | CS_DROPSHADOW; // 候选窗/消息窗加系统阴影(Win11 下随 DWM 圆角)
+     wc.lpfnWndProc    = (WNDPROC)Window::_wndProc;
+     wc.cbClsExtra     = 0;
+     wc.cbWndExtra     = 0;

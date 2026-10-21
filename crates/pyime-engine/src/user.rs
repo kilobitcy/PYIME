@@ -146,12 +146,16 @@ impl UserModel {
     }
 
     /// 读回 `export` 的结果;坏行跳过。词层计数由精确层累加得出。
+    /// 上文含英文字母的搭配(旧版选英文候选后把 est 之类记作上文)丢弃。
     pub fn import(text: &str) -> UserModel {
         let mut m = UserModel::default();
         for line in text.lines() {
             if let Some(rest) = line.strip_prefix("@ng\t") {
                 let c: Vec<&str> = rest.split('\t').collect();
                 if let [p, w, n] = c.as_slice() {
+                    if p.bytes().any(|b| b.is_ascii_alphabetic()) {
+                        continue;
+                    }
                     if let Ok(n) = n.parse::<u32>() {
                         m.next.insert((p.to_string(), w.to_string()), n.min(MAX_COUNT));
                     }
@@ -257,6 +261,13 @@ mod tests {
         let back = UserModel::import(&m.export());
         assert_eq!(back.bonus("ni", "你"), m.bonus("ni", "你"));
         assert_eq!(UserModel::import("坏行\n").export(), "");
+    }
+
+    #[test]
+    fn 读回时丢掉上文含英文字母的个人搭配() {
+        // 用户真实数据:选过英文候选 test/code 后记下了 est→编号、e全局→配只中
+        let m = UserModel::import("@ng\test\t编号\t1\n@ng\te全局\t配只中\t1\n@ng\t全局\t配置\t2\n");
+        assert_eq!(m.export(), "@ng\t全局\t配置\t2");
     }
 
     #[test]

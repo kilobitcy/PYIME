@@ -1,5 +1,5 @@
 //! 回放 `input-log.jsonl`:按日志顺序重放每次选词,统计选中项在候选里的名次,并边放边学习。
-//! 用法:pyime-replay <pyime.dict> <input-log.jsonl> [--gram <pyime.gram>] [--en <pyime.en>] [--fuzzy-penalty <x>] [--episodes-out <修改过程.tsv>] [-v]
+//! 用法:pyime-replay <pyime.dict> <input-log.jsonl> [--gram <pyime.gram>] [--en <pyime.en>] [--fuzzy-penalty <x>] [--episodes-out <修改过程.tsv>] [--ranks-out <逐条名次.tsv>] [-v]
 use pyime_engine::dict::Dict;
 use pyime_engine::english::{parse_compiled, English};
 use pyime_engine::engine::{Engine, Lesson};
@@ -10,7 +10,7 @@ use std::collections::HashMap;
 
 fn main() -> Result<(), String> {
     let mut pos = Vec::new();
-    let (mut gram, mut en, mut verbose, mut penalty, mut episodes_out) = (None, None, false, None, None);
+    let (mut gram, mut en, mut verbose, mut penalty, mut episodes_out, mut ranks_out) = (None, None, false, None, None, None);
     let mut args = std::env::args().skip(1);
     while let Some(a) = args.next() {
         match a.as_str() {
@@ -18,11 +18,12 @@ fn main() -> Result<(), String> {
             "--en" => en = args.next(),
             "--fuzzy-penalty" => penalty = args.next().and_then(|v| v.parse::<f64>().ok()),
             "--episodes-out" => episodes_out = args.next(),
+            "--ranks-out" => ranks_out = args.next(),
             "-v" => verbose = true,
             _ => pos.push(a),
         }
     }
-    let [dict, log] = pos.as_slice() else { return Err("用法: pyime-replay <pyime.dict> <input-log.jsonl> [--gram <pyime.gram>] [--en <pyime.en>] [--fuzzy-penalty <x>] [--episodes-out <修改过程.tsv>] [-v]".into()) };
+    let [dict, log] = pos.as_slice() else { return Err("用法: pyime-replay <pyime.dict> <input-log.jsonl> [--gram <pyime.gram>] [--en <pyime.en>] [--fuzzy-penalty <x>] [--episodes-out <修改过程.tsv>] [--ranks-out <逐条名次.tsv>] [-v]".into()) };
     let read = |p: &str| std::fs::read(p).map_err(|e| format!("读取 {p} 失败: {e}"));
     let mut engine = Engine::new(Dict::from_bytes(read(dict)?)?, FuzzyConfig::default());
     if let Some(g) = gram {
@@ -40,7 +41,9 @@ fn main() -> Result<(), String> {
     // 每次选词顺带学的 lessons,按 (typed, text, 上文) 记最近一次,供 retract 连带撤销(日志里不含 lessons)
     let mut taught: HashMap<(String, String, String), Vec<Lesson>> = HashMap::new();
     let mut episodes = Episodes::default();
-    for line in text.lines() {
+    // 逐条名次(行号⇥拼音⇥上屏⇥名次,0 = 未出现),供调参前后逐条比对
+    let mut ranks = String::new();
+    for (no, line) in text.lines().enumerate() {
         let Ok(v) = serde_json::from_str::<Value>(line) else { continue };
         let ts = v["ts"].as_u64().unwrap_or(0);
         if let Some(p) = v["edit"].as_str() {
@@ -81,6 +84,7 @@ fn main() -> Result<(), String> {
         let cands = engine.candidates_after(input, ctx);
         let rank = cands.iter().position(|c| c.text == chosen);
         total += 1;
+        ranks += &format!("{}\t{input}\t{chosen}\t{}\n", no + 1, rank.map_or(0, |r| r + 1));
         match rank {
             Some(r) => {
                 hit1 += usize::from(r < 1);
@@ -114,6 +118,9 @@ fn main() -> Result<(), String> {
     println!("{}", episodes.report());
     if let Some(p) = episodes_out {
         std::fs::write(&p, episodes.rows.join("\n") + "\n").map_err(|e| format!("写入 {p} 失败: {e}"))?;
+    }
+    if let Some(p) = ranks_out {
+        std::fs::write(&p, ranks).map_err(|e| format!("写入 {p} 失败: {e}"))?;
     }
     println!("共 {total} 条;首选 {hit1} ({:.1}%) 前3 {hit3} ({:.1}%) 前5 {hit5} ({:.1}%) 未出现 {missing}", pct(hit1), pct(hit3), pct(hit5));
     Ok(())

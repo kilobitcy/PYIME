@@ -27,6 +27,8 @@ const MAX_SYLLABLES: usize = 10;
 /// 返回候选数上限。
 /// 整句候选最多几条。
 const SENTENCES: usize = 3;
+/// 整句排序时精确整句的领先分:模糊整句得分须高出这么多才排到它前面。
+const SENTENCE_EXACT_MARGIN: f64 = 1.5;
 /// 束宽:整句搜索每个位置保留的路径数。
 const BEAM: usize = 12;
 /// 模糊/残缺路径的束宽。
@@ -520,6 +522,10 @@ fn sentences(input: &str, words: &[Word], far: usize, bigram: &dyn Fn(&str, &str
     for (c, quota) in [(0, SENTENCES), (1, 2), (2, 1)] {
         picked.extend(out.iter().filter(|s| class(s) == c).take(quota).cloned());
     }
+    // 名额分完后,精确与模糊整句按得分合排(精确另加 SENTENCE_EXACT_MARGIN),残缺档仍垫底:
+    // 模糊惩罚已计入得分,再按档整体置后会让 亲是靠 这类精确拼凑压过 请思考
+    let key = |s: &(Candidate, f64, bool)| s.1 + if class(s) == 0 { SENTENCE_EXACT_MARGIN } else { 0.0 };
+    picked.sort_by(|a, b| (class(a) == 2).cmp(&(class(b) == 2)).then(key(b).total_cmp(&key(a))));
     picked
 }
 
@@ -601,6 +607,16 @@ mod tests {
     fn 整段有词时不拼整句() {
         let e = engine(&[("shi shi", "事实", 100), ("shi", "是", 1_000_000)]);
         assert_eq!(texts(&e, "shishi")[0], "事实");
+    }
+
+    #[test]
+    fn 模糊整句得分明显更高时排在精确整句前() {
+        // 用户真实例子 qinshikao:精确的 亲是靠 不应压过模糊的 请思考
+        let e = engine(&[("qin", "亲", 100), ("qing", "请", 1_000_000), ("kai shi", "开始", 50_000)]);
+        assert_eq!(texts(&e, "qinkaishi")[0], "请开始");
+        // 模糊整句只略高于精确整句(不足 SENTENCE_EXACT_MARGIN)时,精确整句仍在前
+        let e = engine(&[("qin", "亲", 1000), ("qing", "请", 30_000), ("kai shi", "开始", 50_000)]);
+        assert_eq!(texts(&e, "qinkaishi")[..2], ["亲开始", "请开始"]);
     }
 
     #[test]
