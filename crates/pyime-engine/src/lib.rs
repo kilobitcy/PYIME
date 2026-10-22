@@ -7,3 +7,4 @@ pub mod gram;
 pub mod pinyin;
 pub mod user;
 pub mod rime;
+pub mod symbol;
