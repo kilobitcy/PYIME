@@ -252,17 +252,23 @@ impl Session {
                 true
             }
             (tray::CMD_EDIT_USER, tray::COMMAND_MENU) => {
+                crate::log::line("菜单:编辑用户词库");
                 self.ime.edit_user();
                 true
             }
             (tray::CMD_RELOAD_USER, tray::COMMAND_MENU) => {
                 match self.ime.reload_user() {
-                    Ok(()) => crate::log::line("已重新加载用户词库"),
+                    Ok(()) => {
+                        // 组字中途重载:已选分段的撤销记录属旧数据,不能对新读入的计数做减法
+                        self.learned.clear();
+                        crate::log::line("已重新加载用户词库");
+                    }
                     Err(e) => crate::log::line(&format!("重新加载用户词库失败: {e}")),
                 }
                 true
             }
             (tray::CMD_OPEN_DIR, tray::COMMAND_MENU) => {
+                crate::log::line("菜单:打开数据目录");
                 self.ime.open_data_dir();
                 true
             }

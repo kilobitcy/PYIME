@@ -18,6 +18,30 @@ fn edit_backends(dir: &str, edit: fn(&str) -> Result<String, String>) -> Result<
     std::fs::write(&path, new).map_err(|e| format!("写入 {path:?} 失败: {e}"))
 }
 
+/// 去掉 stdin/stdout/stderr 句柄的继承标志。PIMELauncher 以可继承方式创建这些管道,
+/// 而 std 起子进程时 bInheritHandles=TRUE,`Stdio::null()` 挡不住其他可继承句柄:
+/// 菜单打开的记事本会持有 stdout 写端,server.exe 崩溃后 Launcher 读不到 EOF、不重启后端。
+#[cfg(windows)]
+fn disinherit_std_handles() {
+    #[link(name = "kernel32")]
+    extern "system" {
+        fn GetStdHandle(which: u32) -> isize;
+        fn SetHandleInformation(handle: isize, mask: u32, flags: u32) -> i32;
+    }
+    const HANDLE_FLAG_INHERIT: u32 = 1;
+    const INVALID_HANDLE_VALUE: isize = -1;
+    for (which, name) in [(-10i32 as u32, "stdin"), (-11i32 as u32, "stdout"), (-12i32 as u32, "stderr")] {
+        // SAFETY: 两个 Win32 函数只读写句柄属性,参数均为值类型。
+        let h = unsafe { GetStdHandle(which) };
+        if h == 0 || h == INVALID_HANDLE_VALUE {
+            continue;
+        }
+        if unsafe { SetHandleInformation(h, HANDLE_FLAG_INHERIT, 0) } == 0 {
+            log::line(&format!("取消 {name} 句柄继承失败: {}", io::Error::last_os_error()));
+        }
+    }
+}
+
 fn main() {
     let args: Vec<String> = std::env::args().collect();
     if let [_, flag, dir] = args.as_slice() {
@@ -38,6 +62,8 @@ fn main() {
     log::init();
     inputlog::init();
     log::install_panic_hook();
+    #[cfg(windows)]
+    disinherit_std_handles();
     let ime = ime::Ime::load();
     log::line(&format!(
         "启动 pyime-backend {} args={:?} exe={:?}",

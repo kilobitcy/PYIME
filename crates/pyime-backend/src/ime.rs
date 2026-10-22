@@ -261,8 +261,8 @@ impl Ime {
         self.launch("explorer.exe", dir);
     }
 
-    /// 启动外部程序,不等待。三路 stdio 置空:后端经 stdin/stdout 与 PIME 通信,
-    /// 子进程继承管道会使 server.exe 退出后 PIMELauncher 读不到 EOF。测试里只记录。
+    /// 启动外部程序,不等待。三路 stdio 置空,让子进程的标准句柄指向 NUL;
+    /// 与 PIME 通信的管道句柄已在 `main` 启动时设为不可继承(见 `disinherit_std_handles`)。测试里只记录。
     fn launch(&self, program: &str, arg: &Path) {
         #[cfg(test)]
         self.launched.borrow_mut().push(format!("{program} {}", arg.display()));

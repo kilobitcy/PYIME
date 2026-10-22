@@ -959,3 +959,16 @@ fn 重新加载后退格删光不撤回旧学习() {
     let exported = s.ime.user_export();
     assert!(exported.contains("ni\t你\t5"), "{exported}");
 }
+
+#[test]
+fn 组字中重新加载后退格删光不撤回旧分段学习() {
+    let p = crate::ime::temp_user_path("gen-mid");
+    let mut s = Session::new(Ime::with_user_path(engine(), p.clone()));
+    type_pick(&mut s, &[N, I, H, A, O], "你"); // 分段选 你,ni→你 记入本次组词的撤销记录
+    std::fs::write(&p, "ni\t你\t5").unwrap();
+    menu_cmd(&mut s, 12); // 组字中途重载
+    press(&mut s, &[32]); // 空格选 好,整句 你好 上屏
+    backs(&mut s, 2); // 删光 你好,撤回本次学习
+    let exported = s.ime.user_export();
+    assert!(exported.contains("ni\t你\t5"), "{exported}");
+}
