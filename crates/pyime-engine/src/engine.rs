@@ -4,6 +4,7 @@ use crate::english::{English, Hit, TIER_CUSTOM};
 use crate::gram::Gram;
 use crate::fuzzy::{partial, variants, FuzzyConfig};
 use crate::pinyin::{is_syllable, steals, syllables_at};
+use crate::symbol::Symbols;
 use crate::user::UserModel;
 
 /// 多字词每次模糊替换的惩罚(自然对数域,约等于词频缩小 e^2.5 ≈ 12 倍)。
@@ -44,6 +45,8 @@ const EN_PARTIAL_COMPLETE: usize = 2;
 const EN_SLOT: usize = 2;
 /// 精确通时英文完全匹配至少几个字母才出(档位 0 不限)。
 const EN_EXACT_MIN: usize = 4;
+/// 每个宿主候选后至多附加几个符号。
+const SYMBOLS_PER_WORD: usize = 2;
 
 /// 选中整句时顺带学习的一项:(拼音片段, 词, 上文)。
 pub type Lesson = (String, String, String);
@@ -67,13 +70,14 @@ pub struct Candidate {
     pub source: Source,
 }
 
-/// 候选来源:整段词(词典或用户短语吃满输入)、整句(Viterbi 拼装)、前缀词(只吃前一段)、英文(文字全为 ASCII)。
+/// 候选来源:整段词(词典或用户短语吃满输入)、整句(Viterbi 拼装)、前缀词(只吃前一段)、英文(文字全为 ASCII)、符号(附在精确整段词后)。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Source {
     Whole,
     Sentence,
     Prefix,
     English,
+    Symbol,
 }
 
 impl Candidate {
@@ -168,11 +172,12 @@ pub struct Engine {
     gram_weight: f64,
     gram_threshold: f64,
     english: Option<English>,
+    symbols: Symbols,
 }
 
 impl Engine {
     pub fn new(dict: Dict, cfg: FuzzyConfig) -> Engine {
-        Engine { dict, fuzzy_penalty: FUZZY_PENALTY, cfg, user: UserModel::default(), gram: None, gram_weight: GRAM_WEIGHT, gram_threshold: GRAM_THRESHOLD, english: None }
+        Engine { dict, fuzzy_penalty: FUZZY_PENALTY, cfg, user: UserModel::default(), gram: None, gram_weight: GRAM_WEIGHT, gram_threshold: GRAM_THRESHOLD, english: None, symbols: Symbols::default() }
     }
 
     pub fn set_gram(&mut self, gram: Gram) {
@@ -230,6 +235,11 @@ impl Engine {
         if let Some(en) = &mut self.english {
             en.forget(text);
         }
+    }
+
+    /// 载入符号表:精确整段词候选后附加对应符号。
+    pub fn set_symbols(&mut self, symbols: Symbols) {
+        self.symbols = symbols;
     }
 
     pub fn set_english(&mut self, english: English) {
@@ -349,6 +359,7 @@ impl Engine {
         for c in out.iter_mut().filter(|c| c.text.is_ascii()) {
             c.source = Source::English;
         }
+        place_symbols(&self.symbols, &words, input.len(), &mut out);
         out.truncate(MAX_CANDIDATES);
         out
     }
@@ -419,6 +430,26 @@ impl Engine {
 }
 
 /// 按拼音三态把英文候选插进 `out`;`input` 须全为小写字母。
+/// 在精确整段词候选后插入符号表里的符号(取表内前几个,已在列表中的跳过);
+/// 符号沿用宿主切分。模糊、残缺音节补全、前缀词、只靠整句拼出的候选不挂。
+fn place_symbols(symbols: &Symbols, words: &[Word], len: usize, out: &mut Vec<Candidate>) {
+    let exact: Vec<&str> = words.iter().filter(|w| w.start == 0 && w.end == len && w.fuzzy == 0 && !w.partial).map(|w| w.text.as_str()).collect();
+    let mut i = 0;
+    while i < out.len() {
+        let c = &out[i];
+        i += 1;
+        if c.consumed != len || c.source == Source::Symbol || !exact.contains(&c.text.as_str()) {
+            continue;
+        }
+        let cuts = c.cuts.clone();
+        let add: Vec<String> = symbols.get(&c.text).iter().take(SYMBOLS_PER_WORD).filter(|s| !out.iter().any(|o| o.text == **s)).cloned().collect();
+        for text in add {
+            out.insert(i, Candidate { text, consumed: len, fuzzy: 0, pairs: 0, cuts: cuts.clone(), parts: Vec::new(), source: Source::Symbol });
+            i += 1;
+        }
+    }
+}
+
 fn place_english(en: &English, input: &str, cover: Cover, out: &mut Vec<Candidate>) {
     if input.is_empty() || !input.bytes().all(|b| b.is_ascii_lowercase()) {
         return;
@@ -864,6 +895,58 @@ mod tests {
         let mut e = engine(entries);
         e.set_english(English::new(en.iter().map(|&(k, w, t)| (k.to_string(), w.to_string(), t)).collect()));
         e
+    }
+
+    fn with_symbols(entries: &[(&str, &str, u32)], table: &str) -> Engine {
+        let mut e = engine(entries);
+        e.set_symbols(Symbols::parse(table));
+        e
+    }
+
+    fn has(t: &[String], s: &str) -> bool {
+        t.iter().any(|x| x == s)
+    }
+
+    #[test]
+    fn 符号紧跟精确整段词() {
+        let e = with_symbols(&[("shang", "上", 1000), ("shang", "尚", 500)], "上\t↑\n");
+        assert_eq!(texts(&e, "shang"), ["上", "↑", "尚"]);
+        assert_eq!(cand(&e, "shang", "↑").source, Source::Symbol);
+    }
+
+    #[test]
+    fn 每词最多两个符号_按表序() {
+        let e = with_symbols(&[("er", "二", 1000), ("er", "而", 500)], "二\t② Ⅱ ⑵\n");
+        assert_eq!(texts(&e, "er"), ["二", "②", "Ⅱ", "而"]);
+    }
+
+    #[test]
+    fn 前缀词不挂符号() {
+        let e = with_symbols(&[("shang", "上", 1000), ("ban", "班", 1000), ("shang ban", "上班", 800)], "上\t↑\n");
+        let t = texts(&e, "shangban");
+        assert!(has(&t, "上") && !has(&t, "↑"), "{t:?}");
+    }
+
+    #[test]
+    fn 模糊与残缺音节补全的宿主不挂() {
+        let e = with_symbols(&[("san", "三", 1000), ("shang", "上", 1000)], "三\t③\n上\t↑\n");
+        let t = texts(&e, "san");
+        assert!(has(&t, "上") && has(&t, "③") && !has(&t, "↑"), "{t:?}");
+        let t = texts(&e, "sh");
+        assert!(has(&t, "上") && !has(&t, "↑"), "{t:?}");
+    }
+
+    #[test]
+    fn 已在列表中的符号不重复() {
+        let e = with_symbols(&[("shang", "上", 1000), ("shang", "↑", 500)], "上\t↑\n");
+        assert_eq!(texts(&e, "shang").iter().filter(|t| *t == "↑").count(), 1);
+    }
+
+    #[test]
+    fn 符号沿用宿主切分_ascii_符号仍为符号来源() {
+        let e = with_symbols(&[("er shi", "二十", 1000), ("bai fen hao", "百分号", 1000)], "二十\t⑳\n百分号\t%\n");
+        assert_eq!(cand(&e, "ershi", "⑳").cuts, cand(&e, "ershi", "二十").cuts);
+        assert_eq!(cand(&e, "baifenhao", "%").source, Source::Symbol);
     }
 
     #[test]
