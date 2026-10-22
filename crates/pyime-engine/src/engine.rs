@@ -106,6 +106,8 @@ struct Word {
     last: usize,
     /// 用户曾为这段拼音直接选过该词:模糊得来也按精确参与整句分档。
     learned: bool,
+    /// 得分中个人学习的加分;整句里本词与前一词抢音时扣回,免得学过的单字(e → 饿)抵消抢音惩罚。
+    bonus: f64,
 }
 
 impl Word {
@@ -300,7 +302,7 @@ impl Engine {
             for e in self.top_entries(&next) {
                 let bonus = self.user.bonus(&input[start..], &e.word);
                 let score = f64::from(e.weight.max(1)).ln() - self.penalty(key.is_empty()) * f64::from(a.fuzzy) + a.discount - SPLIT_PENALTY * f64::from(a.splits) - PARTIAL_PENALTY + bonus - if key.is_empty() { SINGLE_CHAR_DISCOUNT } else { 0.0 };
-                out.push(Word { start, end: input.len(), text: e.word, score, fuzzy: a.fuzzy, pairs: a.pairs, cuts: cuts.to_vec(), partial: true, learned: false, last: pos });
+                out.push(Word { start, end: input.len(), text: e.word, score, fuzzy: a.fuzzy, pairs: a.pairs, cuts: cuts.to_vec(), partial: true, learned: false, last: pos, bonus });
             }
         }
     }
@@ -321,7 +323,7 @@ impl Engine {
                     let bonus = self.user.bonus(&input[start..end], &e.word);
                     let learned = a.fuzzy > 0 && self.user.chose(&input[start..end], &e.word);
                     let score = f64::from(e.weight.max(1)).ln() - self.penalty(depth == 0) * f64::from(a.fuzzy) + a.discount - SPLIT_PENALTY * f64::from(a.splits) + bonus - if depth == 0 { SINGLE_CHAR_DISCOUNT } else { 0.0 };
-                    out.push(Word { start, end, text: e.word, score, fuzzy: a.fuzzy, pairs: a.pairs, cuts: cuts.clone(), partial: false, learned, last: pos });
+                    out.push(Word { start, end, text: e.word, score, fuzzy: a.fuzzy, pairs: a.pairs, cuts: cuts.clone(), partial: false, learned, last: pos, bonus });
                 }
                 if depth + 1 < MAX_SYLLABLES {
                     cuts.push(end);
@@ -367,7 +369,7 @@ impl Engine {
         }
         for (typed, text, bonus) in self.user.matching(input) {
             if !words.iter().any(|w| w.start == 0 && w.end == typed.len() && w.text == text) {
-                words.push(Word { start: 0, end: typed.len(), text: text.to_string(), score: USER_PHRASE_BASE + bonus, fuzzy: 0, pairs: 0, cuts: Vec::new(), partial: false, learned: false, last: typed.len() });
+                words.push(Word { start: 0, end: typed.len(), text: text.to_string(), score: USER_PHRASE_BASE + bonus, fuzzy: 0, pairs: 0, cuts: Vec::new(), partial: false, learned: false, last: typed.len(), bonus });
             }
         }
         if !context.is_empty() {
@@ -464,7 +466,7 @@ fn insert_english<'a>(out: &mut Vec<Candidate>, at: usize, input: &str, hits: im
 
 /// 在 [0, far] 上做束搜索 Viterbi,返回至多 `SENTENCES` 条拆成 ≥2 个词的整句(得分从高到低)。
 /// `bigram(上文, 词)` 给相邻词的搭配加分。
-/// 相邻两词之间若是抢音切分(见 `pinyin::steals`),另扣 `SPLIT_PENALTY`。
+/// 相邻两词之间若是抢音切分(见 `pinyin::steals`),另扣 `SPLIT_PENALTY` 及后一词的个人学习加分。
 fn sentences(input: &str, words: &[Word], far: usize, bigram: &dyn Fn(&str, &str) -> f64) -> Vec<(Candidate, f64, bool)> {
     // best[pos] = 到达 pos 的前 BEAM 条路径:(得分, 词下标, 前驱位置上的名次, 路径末尾几个字)
     let mut best: Vec<Vec<(f64, usize, usize, String, bool)>> = vec![Vec::new(); far + 1];
@@ -478,7 +480,7 @@ fn sentences(input: &str, words: &[Word], far: usize, bigram: &dyn Fn(&str, &str
         } else {
             for (r, p) in best[w.start].iter().enumerate() {
                 let split = steals(input, words[p.1].last, w.start, w.partial && w.cuts.is_empty());
-                let total = p.0 + w.score - WORD_COST + bigram(&p.3, &w.text) - if split { SPLIT_PENALTY } else { 0.0 };
+                let total = p.0 + w.score - WORD_COST + bigram(&p.3, &w.text) - if split { SPLIT_PENALTY + w.bonus } else { 0.0 };
                 next.push((total, i, r, tail(&format!("{}{}", p.3, w.text)), p.4 || w.loose()));
             }
         }
@@ -837,6 +839,17 @@ mod tests {
         // 不抢音的元音开头切分(fang|an)不受影响
         let e = engine(&[("fang an", "方案", 1000), ("fan gan", "反感", 900)]);
         assert_eq!(texts(&e, "fangan")[0], "方案");
+    }
+
+    #[test]
+    fn 抢音切分处的学过单字不抵消惩罚() {
+        // 学过 e → 饿 后,shi|lie 抢音拼出的 实力饿 不应压过模糊整段词 四列(s=sh)
+        let mut e = engine(&[("si lie", "四列", 10), ("shi li", "实力", 1_000_000), ("e", "饿", 1000)]);
+        assert_eq!(texts(&e, "shilie")[0], "四列");
+        e.learn("e", "饿");
+        assert_eq!(texts(&e, "shilie")[0], "四列");
+        // 单独键入 e 时学习照常生效
+        assert_eq!(texts(&e, "e")[0], "饿");
     }
 
     #[test]
