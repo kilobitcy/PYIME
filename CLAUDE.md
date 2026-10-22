@@ -86,6 +86,8 @@ Windows 11 拼音输入法。目标:界面与功能像微信输入法一样简�
 - Win8+ 托盘 `windows-mode-icon`:`onActivate` 加、`onDeactivate` 删;左键切中英(组字中忽略:onCommand 回复无编辑会话);Shift 切换同步 `changeButton`。
 - 右键菜单:版本(置灰)/编辑用户词库…/重新加载用户词库/打开数据目录;命令 id 见 `tray.rs`。
 - 图标为 PIME 原版黑字,深色任务栏可读性待实机确认。
+- `onCommand`/`onMenu` 回复无 EditSession,不得带 `showMessage`/`commitString`/`compositionString`/候选(`PIMEClient.cpp:126-137` 的 `updateMessageWindow` 在判空前执行,会崩宿主)。
+- 菜单起的子进程(记事本/资源管理器)不继承管道句柄:`main.rs` 启动时已去掉 std 句柄的继承标志,否则 server.exe 崩溃后 Launcher 读不到 EOF、不重启后端。
 
 ### user.txt 机制(据 `ime.rs`/`user.rs`)
 - server.exe 启动时读 `user.txt`;每次选词把内存数据整份写回。
