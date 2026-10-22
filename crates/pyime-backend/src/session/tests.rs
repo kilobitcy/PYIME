@@ -846,3 +846,67 @@ fn 分段末段选符号_整句不学_上文不含符号() {
     assert!(exported.contains("wo\t我\t2"), "{exported}");
     assert!(!exported.contains("woshang") && !exported.contains('↑'), "{exported}");
 }
+
+fn win8_session() -> Session {
+    let mut s = session();
+    s.handle(&json!({"method": "init", "seqNum": 1, "isWindows8Above": true}));
+    s
+}
+
+fn left_click(s: &mut Session) -> Value {
+    s.handle(&json!({"method": "onCommand", "seqNum": 4, "id": 1, "type": 0}))
+}
+
+fn icon_of(v: &Value) -> &str {
+    v[0]["icon"].as_str().unwrap()
+}
+
+#[test]
+fn win8下激活时加托盘图标_失活时删() {
+    let mut s = win8_session();
+    let r = s.handle(&json!({"method": "onActivate", "seqNum": 2, "isKeyboardOpen": true}));
+    assert_eq!(r["addButton"][0]["id"], "windows-mode-icon");
+    assert_eq!(r["addButton"][0]["commandId"], 1);
+    assert!(icon_of(&r["addButton"]).ends_with("chi_full_capsoff.ico"));
+    let r = s.handle(&json!({"method": "onDeactivate", "seqNum": 3}));
+    assert_eq!(r["removeButton"], json!(["windows-mode-icon"]));
+}
+
+#[test]
+fn init只记系统版本不加图标_旧系统激活也不加() {
+    let mut s = session();
+    let r = s.handle(&json!({"method": "init", "seqNum": 1, "isWindows8Above": true}));
+    assert!(r.get("addButton").is_none());
+    let mut s = session();
+    s.handle(&json!({"method": "init", "seqNum": 1, "isWindows8Above": false}));
+    let r = s.handle(&json!({"method": "onActivate", "seqNum": 2}));
+    assert!(r.get("addButton").is_none());
+}
+
+#[test]
+fn 单击shift切换时换托盘图标() {
+    let mut s = win8_session();
+    let r = shift_click(&mut s);
+    assert!(icon_of(&r["changeButton"]).ends_with("eng_full_capsoff.ico"));
+    let r = shift_click(&mut s);
+    assert!(icon_of(&r["changeButton"]).ends_with("chi_full_capsoff.ico"));
+}
+
+#[test]
+fn 左键单击托盘图标切换中英() {
+    let mut s = win8_session();
+    let r = left_click(&mut s);
+    assert_eq!(r["return"], true);
+    assert!(icon_of(&r["changeButton"]).ends_with("eng_full_capsoff.ico"));
+    assert_eq!(key(&mut s, "filterKeyDown", N)["return"], false);
+}
+
+#[test]
+fn 组字中左键单击托盘图标不切换() {
+    let mut s = win8_session();
+    press(&mut s, &[N, I]);
+    let r = left_click(&mut s);
+    assert_eq!(r["return"], false);
+    assert!(r.get("changeButton").is_none() && r.get("commitString").is_none());
+    assert_eq!(key(&mut s, "filterKeyDown", N)["return"], true);
+}

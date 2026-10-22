@@ -5,6 +5,7 @@ mod punct;
 mod protocol;
 mod register;
 mod session;
+mod tray;
 
 use std::collections::HashMap;
 use std::io::{self, BufRead, Write};

@@ -3,6 +3,7 @@ use crate::ime::Ime;
 use pyime_engine::engine::{Candidate, Lesson, Source};
 use serde_json::{json, Value};
 use crate::punct::{self, Mapped};
+use crate::tray;
 use std::rc::Rc;
 use std::time::{Duration, Instant};
 
@@ -114,11 +115,13 @@ pub struct Session {
     caps: String,
     /// 已计入 `caps` 且尚未抬起的字母键,libIME 重复调用 filterKeyDown 时不重复计。
     caps_down: Option<i64>,
+    /// 前端是 Win8 及以上(`init` 告知),托盘有输入法模式图标。
+    win8: bool,
 }
 
 impl Session {
     pub fn new(ime: Rc<Ime>) -> Session {
-        Session { ime, pending: String::new(), input: String::new(), cands: Vec::new(), typed_all: String::new(), context: String::new(), segments: 0, page: 0, cursor: 0, english: false, shift_pending: false, shift_combo_up: None, shift_misfire: false, shift_guard: SHIFT_GUARD, learned: Vec::new(), last: None, after_digit: false, quote_open: [false; 2], closers: Vec::new(), injected: None, inject_echo: INJECT_ECHO, back_counted: None, peak: None, deleting: false, caps: String::new(), caps_down: None }
+        Session { ime, pending: String::new(), input: String::new(), cands: Vec::new(), typed_all: String::new(), context: String::new(), segments: 0, page: 0, cursor: 0, english: false, shift_pending: false, shift_combo_up: None, shift_misfire: false, shift_guard: SHIFT_GUARD, learned: Vec::new(), last: None, after_digit: false, quote_open: [false; 2], closers: Vec::new(), injected: None, inject_echo: INJECT_ECHO, back_counted: None, peak: None, deleting: false, caps: String::new(), caps_down: None, win8: false }
     }
 
     fn composing(&self) -> bool {
@@ -206,6 +209,11 @@ impl Session {
                 self.flush_raw();
                 resp["showCandidates"] = json!(false);
             }
+            // 模式图标只在 onActivate 加:init 也加会在 TSF 里留下一个删不掉的重复按钮
+            "init" => self.win8 = req["isWindows8Above"] == true,
+            "onActivate" if self.win8 => resp["addButton"] = json!([tray::mode_button(self.english)]),
+            "onDeactivate" if self.win8 => resp["removeButton"] = json!([tray::MODE_ICON]),
+            "onCommand" => self.on_command(req, &mut resp),
             _ => {}
         }
         resp
@@ -221,6 +229,28 @@ impl Session {
             resp["compositionCursor"] = json!(0);
             resp["showCandidates"] = json!(false);
         }
+        if self.win8 {
+            resp["changeButton"] = json!([tray::mode_change(self.english)]);
+        }
+    }
+
+    /// 托盘模式图标的左键单击与右键菜单命令;`return` 表示是否处理了。
+    fn on_command(&mut self, req: &Value, resp: &mut Value) {
+        let id = req["id"].as_u64().unwrap_or(0);
+        let kind = req["type"].as_u64().unwrap_or(u64::MAX);
+        let done = match (id, kind) {
+            // onCommand 的回复没有编辑会话,DLL 不处理上屏/组字/候选;组字中切换会使界面与会话失同步,故忽略
+            (tray::CMD_MODE_ICON, tray::COMMAND_LEFT_CLICK) if self.composing() => {
+                crate::log::line("组字中左键单击托盘图标,忽略");
+                false
+            }
+            (tray::CMD_MODE_ICON, tray::COMMAND_LEFT_CLICK) => {
+                self.toggle_english(resp);
+                true
+            }
+            _ => false,
+        };
+        resp["return"] = json!(done);
     }
 
     /// 下一个词的上文:已选定未上屏的文字接在已上屏上文之后。
