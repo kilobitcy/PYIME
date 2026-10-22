@@ -21,6 +21,11 @@ pub struct Ime {
     user_stamp: Cell<Option<(SystemTime, u64)>>,
     /// 已为"跳过写回"记过日志(写盘或重载成功后清除),免得每次选词都记一行。
     skip_logged: Cell<bool>,
+    /// 用户数据代际号,每次重新加载成功 +1;会话据此丢弃重载前的撤销记录。
+    generation: Cell<u32>,
+    /// 测试用:记录"启动外部程序"而不真的启动。
+    #[cfg(test)]
+    launched: RefCell<Vec<String>>,
     /// 测试用:记录"模拟按键"而不真的发送。
     #[cfg(test)]
     pressed: RefCell<Vec<u16>>,
@@ -152,8 +157,11 @@ impl Ime {
             en_learned_path,
             user_stamp: Cell::new(user_stamp),
             skip_logged: Cell::new(false),
+            generation: Cell::new(0),
             #[cfg(test)]
             pressed: RefCell::new(Vec::new()),
+            #[cfg(test)]
+            launched: RefCell::new(Vec::new()),
         })
     }
 
@@ -209,6 +217,69 @@ impl Ime {
     pub fn user_file_changed(&self) -> bool {
         let Some(path) = &self.user_path else { return false };
         stamp(path).is_some_and(|s| self.user_stamp.get() != Some(s))
+    }
+
+    /// 当前用户数据的代际号。
+    pub fn generation(&self) -> u32 {
+        self.generation.get()
+    }
+
+    /// 菜单"重新加载用户词库":重读 `user.txt`(去 BOM、CRLF→LF)与英文词表。
+    /// 读不出(如非 UTF-8)时不动内存数据、不更新 stamp,文件继续受保护。
+    pub fn reload_user(&self) -> Result<(), String> {
+        let Some(path) = &self.user_path else { return Err("没有用户数据路径".into()) };
+        let text = match std::fs::read(path) {
+            Ok(b) => String::from_utf8(b).map_err(|_| format!("{path:?} 不是 UTF-8 编码"))?,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => String::new(),
+            Err(e) => return Err(format!("读取 {path:?} 失败: {e}")),
+        };
+        let text = text.strip_prefix('\u{feff}').unwrap_or(&text).replace("\r\n", "\n");
+        let mut engine = self.engine.borrow_mut();
+        engine.set_user(UserModel::import(&text));
+        engine.set_english(load_english(self.en_learned_path.as_ref()));
+        self.user_stamp.set(stamp(path));
+        self.skip_logged.set(false);
+        self.generation.set(self.generation.get() + 1);
+        Ok(())
+    }
+
+    /// 菜单"编辑用户词库…":写盘一次(文件已被外部修改则 `save` 自动跳过)、备份为 `user.txt.bak`,
+    /// 再用记事本打开。不等待记事本退出:Win11 新记事本可能并入已有窗口,启动的进程随即退出。
+    pub fn edit_user(&self) {
+        let Some(path) = &self.user_path else { return };
+        self.save(&self.engine.borrow());
+        if let Err(e) = std::fs::copy(path, path.with_extension("txt.bak")) {
+            log::line(&format!("备份 {path:?} 失败: {e}"));
+        }
+        self.launch("notepad.exe", path);
+    }
+
+    /// 菜单"打开数据目录":目录不存在先建(从未选过词时还没有),再用资源管理器打开。
+    pub fn open_data_dir(&self) {
+        let Some(dir) = self.user_path.as_deref().and_then(Path::parent) else { return };
+        let _ = std::fs::create_dir_all(dir);
+        self.launch("explorer.exe", dir);
+    }
+
+    /// 启动外部程序,不等待。三路 stdio 置空:后端经 stdin/stdout 与 PIME 通信,
+    /// 子进程继承管道会使 server.exe 退出后 PIMELauncher 读不到 EOF。测试里只记录。
+    fn launch(&self, program: &str, arg: &Path) {
+        #[cfg(test)]
+        self.launched.borrow_mut().push(format!("{program} {}", arg.display()));
+        #[cfg(not(test))]
+        {
+            use std::process::{Command, Stdio};
+            let child = Command::new(program).arg(arg).stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null()).spawn();
+            if let Err(e) = child {
+                log::line(&format!("启动 {program} 失败: {e}"));
+            }
+        }
+    }
+
+    /// 测试用:取走已记录的外部程序启动。
+    #[cfg(test)]
+    pub fn take_launched(&self) -> Vec<String> {
+        std::mem::take(&mut self.launched.borrow_mut())
     }
 
     /// 测试用:当前用户学习数据的存盘文本。
