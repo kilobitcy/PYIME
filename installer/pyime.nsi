@@ -56,6 +56,11 @@ Section "安装"
   File "pyime.en"
   File "symbols.txt"
   File "NOTICE.md"
+  ; 托盘中/英模式图标(取自 PIME,见 NOTICE.md)
+  SetOutPath "$INSTDIR\pyime\icons"
+  File "icons\chi_full_capsoff.ico"
+  File "icons\eng_full_capsoff.ico"
+  SetOutPath "$INSTDIR\pyime"
   ; 可选语法模型:安装程序旁边有 pyime.gram 就一并装上(体积大,单独下载)
   IfFileExists "$EXEDIR\pyime.gram" 0 +2
     CopyFiles /SILENT "$EXEDIR\pyime.gram" "$INSTDIR\pyime\pyime.gram"

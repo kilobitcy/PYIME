@@ -16,7 +16,7 @@ Windows 11 拼音输入法。目标:界面与功能像微信输入法一样简�
 - `crates/pyime-engine`:引擎(`dict` fst 词典、`rime` 词库导入、`pinyin` 音节表与切分格、`fuzzy` 10 对模糊音、`engine` 候选生成与整句 Viterbi、`user` 用户学习、`english` 英文词表与回车学习、`symbol` 符号表(精确整段词后附加符号));`pyime-dict-build` 编译词典、`pyime-en-build` 编译英文词表 `pyime.en`(自带 IT 词表 `installer/en_it.txt`)。
 - `crates/pyime-backend`:PIME 后端(`protocol`/`session`/`ime`/`log`/`register`);词典 `pyime.dict`、英文词表 `pyime.en`、符号表 `symbols.txt`(自带 `installer/symbols.txt`)放在 `server.exe` 同目录,用户数据 `%LOCALAPPDATA%\PYIME\user.txt`,用户英文词表 `en.txt`、回车学习计数 `en_learned.txt` 同目录。
 - `scripts/package.sh <版本>`:测试 + 交叉编译 + 编词典 + makensis 一条龙(rime-ice 默认在 /tmp/rime-ice)。
-- `scripts/windows/`:用户手工改 `user.txt` 后使其生效(`edit-user.bat` 停输入法→记事本编辑→重启;`reload-user.bat` 直接重启;逻辑在 `user-reload.ps1`,含备份、UTF-8 校验、去 BOM/CRLF)。ps1 须存为 UTF-8 BOM + CRLF,bat 保持纯 ASCII。
+- `scripts/windows/`:托盘菜单不可用(输入法卡死)时的备用办法,用户手工改 `user.txt` 后使其生效(`edit-user.bat` 停输入法→记事本编辑→重启;`reload-user.bat` 直接重启;逻辑在 `user-reload.ps1`,含备份、UTF-8 校验、去 BOM/CRLF)。ps1 须存为 UTF-8 BOM + CRLF,bat 保持纯 ASCII。
 - 调参观察:`PYIME_DICT=… cargo test -p pyime-engine --release --test real_engine -- --ignored --nocapture`(`PYIME_INPUTS` 指定拼音)。
 - 回归对照:`PYIME_DICT=$PWD/installer/pyime.dict PYIME_GRAM=/tmp/gram/pyime.gram PYIME_EN=$PWD/installer/pyime.en cargo test -q -p pyime-engine --release --test regression -- --ignored --nocapture`;输出按期望候选来源(整段词/整句/前缀词,·模糊)分桶的通过数。调参前加 `PYIME_RANKS_OUT=/tmp/base.tsv` 存逐例名次,调参后加 `PYIME_RANKS_BASE=/tmp/base.tsv` 逐例比对(救回首位/跌出首位/其余变化)。不设 `PYIME_EN` 则不载英文、不跑英文用例。
 
@@ -82,15 +82,20 @@ Windows 11 拼音输入法。目标:界面与功能像微信输入法一样简�
 - 收录原则:只收"打这个词多半就是要符号"的条目;不收 ASCII 符号、单位缩写、标点名、以普通词义为主的高频词;例外保留 上/下/左/右、一至十、破折号、间隔号(用户确认)。不收 emoji。
 - rime-ice `opencc/emoji.txt` 不合用(上→⬆️、二→2️⃣ 是彩色 emoji)。
 
+### 托盘图标与菜单(设计 `docs/superpowers/specs/2026-10-22-tray-menu-design.md`)
+- Win8+ 托盘 `windows-mode-icon`:`onActivate` 加、`onDeactivate` 删;左键切中英(组字中忽略:onCommand 回复无编辑会话);Shift 切换同步 `changeButton`。
+- 右键菜单:版本(置灰)/编辑用户词库…/重新加载用户词库/打开数据目录;命令 id 见 `tray.rs`。
+- 图标为 PIME 原版黑字,深色任务栏可读性待实机确认。
+
 ### user.txt 机制(据 `ime.rs`/`user.rs`)
-- server.exe 只在启动时读 `user.txt`;每次选词把内存数据整份覆盖写回。运行中手改的内容,下次选词即被覆盖。
-- 读取失败(非 UTF-8)时按空数据启动,下次选词写回空数据 → 学习数据全丢(风险点,尚未在代码里防护)。
-- 导入不处理 BOM(首行失效)与 CRLF(`\r` 致计数解析失败、整行跳过)。
+- server.exe 启动时读 `user.txt`;每次选词把内存数据整份写回。
+- 外部修改保护:记下上次读入/写盘后的 mtime 与长度,不一致即不写回(学习只留在内存),直到托盘菜单"重新加载用户词库"成功;启动时读不出(非 UTF-8)也不写回,不再丢数据。
+- 重新加载会去 BOM、CRLF→LF;非 UTF-8 时不读入、继续保护。"编辑用户词库…"先写盘、备份 `user.txt.bak`,再开记事本。
+- 启动时的导入仍不处理 BOM(首行失效)与 CRLF(`\r` 致计数解析失败、整行跳过);重新加载一次即被规整。
 
 ### 待办(截至 2026-10-22)
-- 实机验证测试包 `installer/PYIME-0.0.0-symcheck-setup.exe`:候选窗 `↑ ② ✓ ★` 是否显示为方框;选 `↑` 后 `user.txt` 无新增。
+- 实机验证 `installer/PYIME-0.0.0-menucheck-setup.exe`(清单 `pime/test-kit/menucheck.txt`,含符号候选原待验项);通过后发 0.1.15,须先问用户。
 - `scripts/windows/user-reload.ps1` 未在 Windows 实机运行过(本机无 pwsh,未做语法检查)。
-- 发版 0.1.15(含符号候选)未做,须先问用户。
 - 符号候选终审未修 Minor:"英文候选不挂符号"无单测;英文候选会被带符号的宿主挤后 1–2 位;`symbols.txt` 非 UTF-8 时整表跳过。
 
 ### 待查
