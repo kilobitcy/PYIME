@@ -2,6 +2,7 @@ use super::*;
 use pyime_engine::dict::{Dict, DictBuilder};
 use pyime_engine::engine::Engine;
 use pyime_engine::fuzzy::FuzzyConfig;
+use pyime_engine::symbol::Symbols;
 
 const N: i64 = 78;
 const I: i64 = 73;
@@ -811,4 +812,37 @@ fn 应用强制结束组字后清空拼音_不带到下次输入() {
     press(&mut s, &[N, I]);
     s.handle(&json!({"method": "onCompositionTerminated", "forced": false, "seqNum": 10}));
     assert_eq!(press(&mut s, &[H, A, O])["compositionString"], "ni'hao");
+}
+
+const S: i64 = 83;
+const G: i64 = 71;
+const SHANG: [i64; 5] = [S, H, A, N, G];
+
+fn session_sym() -> Session {
+    let mut b = DictBuilder::default();
+    b.add("shang", "上", 8000);
+    b.add("wo", "我", 8000);
+    let mut engine = Engine::new(Dict::from_bytes(b.build().unwrap()).unwrap(), FuzzyConfig::default());
+    engine.set_symbols(Symbols::parse("上\t↑\n"));
+    Session::new(Ime::with_engine(engine))
+}
+
+#[test]
+fn 选中符号上屏且不学习() {
+    let mut s = session_sym();
+    let r = type_pick(&mut s, &SHANG, "↑");
+    assert_eq!(r["commitString"], "↑");
+    assert_eq!(s.ime.user_export(), "");
+}
+
+#[test]
+fn 分段末段选符号_整句不学_上文不含符号() {
+    let mut s = session_sym();
+    let r = type_pick(&mut s, &[W, O, S, H, A, N, G], "我");
+    let pos = r["candidateList"].as_array().unwrap().iter().position(|c| c == "↑").unwrap();
+    assert_eq!(key(&mut s, "onKeyDown", 49 + pos as i64)["commitString"], "我↑");
+    type_pick(&mut s, &[W, O], "我"); // 上文若留着"我↑",会记下以 ↑ 为上文的搭配
+    let exported = s.ime.user_export();
+    assert!(exported.contains("wo\t我\t2"), "{exported}");
+    assert!(!exported.contains("woshang") && !exported.contains('↑'), "{exported}");
 }

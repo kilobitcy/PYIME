@@ -5,6 +5,7 @@ use pyime_engine::english::{parse_compiled, parse_list, English, TIER_CUSTOM};
 use pyime_engine::engine::{Candidate, Engine, Lesson};
 use pyime_engine::fuzzy::FuzzyConfig;
 use pyime_engine::gram::Gram;
+use pyime_engine::symbol::Symbols;
 use pyime_engine::user::UserModel;
 use std::cell::RefCell;
 use std::path::PathBuf;
@@ -68,6 +69,11 @@ fn en_path() -> Option<PathBuf> {
     Some(std::env::current_exe().ok()?.parent()?.join("pyime.en"))
 }
 
+/// 符号表随安装包放在 `server.exe` 同目录;缺失则不出符号。
+fn symbols_path() -> Option<PathBuf> {
+    Some(std::env::current_exe().ok()?.parent()?.join("symbols.txt"))
+}
+
 /// 用户数据目录 `%LOCALAPPDATA%\PYIME` 下的文件。
 fn local_file(name: &str) -> Option<PathBuf> {
     std::env::var_os("LOCALAPPDATA").map(|p| PathBuf::from(p).join("PYIME").join(name))
@@ -129,6 +135,9 @@ impl Ime {
         }
         let en_learned_path = local_file("en_learned.txt");
         engine.set_english(load_english(en_learned_path.as_ref()));
+        if let Some(t) = symbols_path().and_then(|p| read_optional(&p)) {
+            engine.set_symbols(Symbols::parse(&t));
+        }
         let user_path = user_path();
         if let Some(text) = user_path.as_ref().and_then(|p| std::fs::read_to_string(p).ok()) {
             engine.set_user(UserModel::import(&text));

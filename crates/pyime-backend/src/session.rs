@@ -1,6 +1,6 @@
 //! 单个前端连接的会话状态:拼音串、候选、分页与选词。
 use crate::ime::Ime;
-use pyime_engine::engine::{Candidate, Lesson};
+use pyime_engine::engine::{Candidate, Lesson, Source};
 use serde_json::{json, Value};
 use crate::punct::{self, Mapped};
 use std::rc::Rc;
@@ -353,9 +353,13 @@ impl Session {
         let index = self.page * PAGE_SIZE + idx;
         let typed: String = self.input.drain(..c.consumed).collect();
         crate::inputlog::select(&input, &ctx, &typed, &c.text, index, &tops);
-        let lessons = c.lessons(&typed, &ctx);
-        self.ime.learn(&typed, &c.text, c.pairs, &ctx, &lessons);
-        self.learned.push((typed.clone(), c.text.clone(), c.pairs, ctx, lessons));
+        // 符号不学习;它吃满剩余输入,必是本次组词的最后一段
+        let symbol = c.source == Source::Symbol;
+        if !symbol {
+            let lessons = c.lessons(&typed, &ctx);
+            self.ime.learn(&typed, &c.text, c.pairs, &ctx, &lessons);
+            self.learned.push((typed.clone(), c.text.clone(), c.pairs, ctx, lessons));
+        }
         self.pending.push_str(&c.text);
         self.typed_all.push_str(&typed);
         self.segments += 1;
@@ -363,14 +367,15 @@ impl Session {
             self.cands.clear();
             self.peak = None;
             let text = std::mem::take(&mut self.pending);
-            if self.segments > 1 {
+            if self.segments > 1 && !symbol {
                 self.ime.learn(&self.typed_all, &text, 0, "", &[]); // 分段选完的整句也学
                 self.learned.push((self.typed_all.clone(), text.clone(), 0, String::new(), Vec::new()));
             }
             let typed_all = std::mem::take(&mut self.typed_all);
             self.finish_commit(typed_all, &text);
             self.segments = 0;
-            self.context = tail3(&format!("{}{}", self.context, text));
+            // 以符号结尾时不留上文,免得记下以符号为上文的搭配
+            self.context = if symbol { String::new() } else { tail3(&format!("{}{}", self.context, text)) };
             return Some(text);
         }
         self.refresh();
