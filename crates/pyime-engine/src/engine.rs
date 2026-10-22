@@ -429,7 +429,6 @@ impl Engine {
     }
 }
 
-/// 按拼音三态把英文候选插进 `out`;`input` 须全为小写字母。
 /// 在精确整段词候选后插入符号表里的符号(取表内前几个,已在列表中的跳过);
 /// 符号沿用宿主切分。模糊、残缺音节补全、前缀词、只靠整句拼出的候选不挂。
 fn place_symbols(symbols: &Symbols, words: &[Word], len: usize, out: &mut Vec<Candidate>) {
@@ -450,6 +449,7 @@ fn place_symbols(symbols: &Symbols, words: &[Word], len: usize, out: &mut Vec<Ca
     }
 }
 
+/// 按拼音三态把英文候选插进 `out`;`input` 须全为小写字母。
 fn place_english(en: &English, input: &str, cover: Cover, out: &mut Vec<Candidate>) {
     if input.is_empty() || !input.bytes().all(|b| b.is_ascii_lowercase()) {
         return;
