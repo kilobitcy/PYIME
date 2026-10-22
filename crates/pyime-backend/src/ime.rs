@@ -7,14 +7,20 @@ use pyime_engine::fuzzy::FuzzyConfig;
 use pyime_engine::gram::Gram;
 use pyime_engine::symbol::Symbols;
 use pyime_engine::user::UserModel;
-use std::cell::RefCell;
-use std::path::PathBuf;
+use std::cell::{Cell, RefCell};
+use std::path::{Path, PathBuf};
 use std::rc::Rc;
+use std::time::SystemTime;
 
 pub struct Ime {
     engine: RefCell<Engine>,
     user_path: Option<PathBuf>,
     en_learned_path: Option<PathBuf>,
+    /// 上次成功读入或写盘后 `user.txt` 的 (修改时间, 长度)。与磁盘不一致即视为被外部修改,不再写回;
+    /// 为 None 且文件存在(启动时读不出,如非 UTF-8)同样不写回,直到重新加载成功。
+    user_stamp: Cell<Option<(SystemTime, u64)>>,
+    /// 已为"跳过写回"记过日志(写盘或重载成功后清除),免得每次选词都记一行。
+    skip_logged: Cell<bool>,
     /// 测试用:记录"模拟按键"而不真的发送。
     #[cfg(test)]
     pressed: RefCell<Vec<u16>>,
@@ -79,6 +85,21 @@ fn local_file(name: &str) -> Option<PathBuf> {
     std::env::var_os("LOCALAPPDATA").map(|p| PathBuf::from(p).join("PYIME").join(name))
 }
 
+/// 文件的 (修改时间, 长度);不存在或取不到时为 None。
+fn stamp(p: &Path) -> Option<(SystemTime, u64)> {
+    let m = std::fs::metadata(p).ok()?;
+    Some((m.modified().ok()?, m.len()))
+}
+
+/// 测试用:本进程独占的临时 `user.txt` 路径(目录已建、文件不存在)。
+#[cfg(test)]
+pub fn temp_user_path(name: &str) -> PathBuf {
+    let dir = std::env::temp_dir().join(format!("pyime-test-{}-{name}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    dir.join("user.txt")
+}
+
 /// 读可选文本文件:不存在静默跳过,其他错误记日志后跳过。
 fn read_optional(p: &std::path::Path) -> Option<String> {
     match std::fs::read_to_string(p) {
@@ -124,6 +145,33 @@ fn load_dict() -> Dict {
 }
 
 impl Ime {
+    fn build(engine: Engine, user_path: Option<PathBuf>, en_learned_path: Option<PathBuf>, user_stamp: Option<(SystemTime, u64)>) -> Rc<Ime> {
+        Rc::new(Ime {
+            engine: RefCell::new(engine),
+            user_path,
+            en_learned_path,
+            user_stamp: Cell::new(user_stamp),
+            skip_logged: Cell::new(false),
+            #[cfg(test)]
+            pressed: RefCell::new(Vec::new()),
+        })
+    }
+
+    /// 启动时读入 `user.txt`,成功返回其 stamp。读不出时按空数据启动且不记 stamp,文件存在即不被覆盖。
+    fn read_user(engine: &mut Engine, p: &Path) -> Option<(SystemTime, u64)> {
+        match std::fs::read_to_string(p) {
+            Ok(text) => {
+                engine.set_user(UserModel::import(&text));
+                stamp(p)
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
+            Err(e) => {
+                log::line(&format!("读取用户数据 {p:?} 失败,重新加载成功前不写回: {e}"));
+                None
+            }
+        }
+    }
+
     pub fn load() -> Rc<Ime> {
         let t = std::time::Instant::now();
         let mut engine = Engine::new(load_dict(), FuzzyConfig::default());
@@ -139,17 +187,28 @@ impl Ime {
             engine.set_symbols(Symbols::parse(&t));
         }
         let user_path = user_path();
-        if let Some(text) = user_path.as_ref().and_then(|p| std::fs::read_to_string(p).ok()) {
-            engine.set_user(UserModel::import(&text));
-        }
+        let user_stamp = user_path.as_deref().and_then(|p| Self::read_user(&mut engine, p));
         log::line(&format!("引擎就绪,耗时 {:?}", t.elapsed()));
-        Rc::new(Ime { engine: RefCell::new(engine), user_path, en_learned_path, #[cfg(test)] pressed: RefCell::new(Vec::new()) })
+        Self::build(engine, user_path, en_learned_path, user_stamp)
     }
 
     /// 测试用:不读盘、不存盘。
     #[cfg(test)]
     pub fn with_engine(engine: Engine) -> Rc<Ime> {
-        Rc::new(Ime { engine: RefCell::new(engine), user_path: None, en_learned_path: None, pressed: RefCell::new(Vec::new()) })
+        Self::build(engine, None, None, None)
+    }
+
+    /// 测试用:用户数据读写指定文件(按启动时的规则读入),不读词典等其他文件。
+    #[cfg(test)]
+    pub fn with_user_path(mut engine: Engine, path: PathBuf) -> Rc<Ime> {
+        let stamp = Self::read_user(&mut engine, &path);
+        Self::build(engine, Some(path), None, stamp)
+    }
+
+    /// `user.txt` 自上次读入或写盘后是否被外部修改过(文件不存在不算)。
+    pub fn user_file_changed(&self) -> bool {
+        let Some(path) = &self.user_path else { return false };
+        stamp(path).is_some_and(|s| self.user_stamp.get() != Some(s))
     }
 
     /// 测试用:当前用户学习数据的存盘文本。
@@ -228,11 +287,24 @@ impl Ime {
 
     fn save(&self, engine: &Engine) {
         let Some(path) = &self.user_path else { return };
+        if self.user_file_changed() {
+            if !self.skip_logged.replace(true) {
+                log::line(&format!("{path:?} 已被外部修改,重新加载前不写回"));
+            }
+            return;
+        }
         if let Some(dir) = path.parent() {
             let _ = std::fs::create_dir_all(dir);
         }
-        if let Err(e) = std::fs::write(path, engine.user().export()) {
-            log::line(&format!("保存用户数据失败: {e}"));
+        match std::fs::write(path, engine.user().export()) {
+            Ok(()) => {
+                self.user_stamp.set(stamp(path));
+                self.skip_logged.set(false);
+            }
+            Err(e) => log::line(&format!("保存用户数据失败: {e}")),
         }
     }
 }
+
+#[cfg(test)]
+mod tests;
