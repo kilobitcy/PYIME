@@ -66,6 +66,8 @@ struct Last {
     punct: usize,
     /// 上屏后放行的退格次数。
     backspaces: usize,
+    /// 上屏时的用户数据代际号;其后用户词库被重新加载过,这些学习已被文件内容取代,不再撤回。
+    gen: u32,
 }
 
 pub struct Session {
@@ -213,6 +215,7 @@ impl Session {
             "init" => self.win8 = req["isWindows8Above"] == true,
             "onActivate" if self.win8 => resp["addButton"] = json!([tray::mode_button(self.english)]),
             "onDeactivate" if self.win8 => resp["removeButton"] = json!([tray::MODE_ICON]),
+            "onMenu" if req["id"] == tray::MODE_ICON => resp["return"] = tray::menu(self.ime.user_file_changed()),
             "onCommand" => self.on_command(req, &mut resp),
             _ => {}
         }
@@ -246,6 +249,21 @@ impl Session {
             }
             (tray::CMD_MODE_ICON, tray::COMMAND_LEFT_CLICK) => {
                 self.toggle_english(resp);
+                true
+            }
+            (tray::CMD_EDIT_USER, tray::COMMAND_MENU) => {
+                self.ime.edit_user();
+                true
+            }
+            (tray::CMD_RELOAD_USER, tray::COMMAND_MENU) => {
+                match self.ime.reload_user() {
+                    Ok(()) => crate::log::line("已重新加载用户词库"),
+                    Err(e) => crate::log::line(&format!("重新加载用户词库失败: {e}")),
+                }
+                true
+            }
+            (tray::CMD_OPEN_DIR, tray::COMMAND_MENU) => {
+                self.ime.open_data_dir();
                 true
             }
             _ => false,
@@ -301,15 +319,19 @@ impl Session {
             return;
         }
         let Some(l) = self.last.take() else { return };
-        self.retract(&l.learned);
+        self.retract(&l);
         self.context.clear();
     }
 
     /// 撤回一次上屏的全部学习。日志只记候选自身的四元组(格式不变),lessons 随之撤销。
-    fn retract(&self, learned: &[Learned]) {
-        let items: Vec<(String, String, u16, String)> = learned.iter().map(|(t, w, p, c, _)| (t.clone(), w.clone(), *p, c.clone())).collect();
+    /// 上屏后用户词库被重新加载过(代际号变了)就不撤回,免得对新读入的计数做减法。
+    fn retract(&self, last: &Last) {
+        if last.gen != self.ime.generation() {
+            return;
+        }
+        let items: Vec<(String, String, u16, String)> = last.learned.iter().map(|(t, w, p, c, _)| (t.clone(), w.clone(), *p, c.clone())).collect();
         crate::inputlog::retract(&items);
-        for (t, w, pairs, ctx, lessons) in learned {
+        for (t, w, pairs, ctx, lessons) in &last.learned {
             self.ime.unlearn(t, w, *pairs, ctx, lessons);
         }
     }
@@ -323,10 +345,10 @@ impl Session {
                 prev.text.chars().take(n).collect()
             };
             if prev.backspaces > 0 && prev.typed == typed && prev_text != text {
-                self.retract(&prev.learned);
+                self.retract(&prev);
             }
         }
-        self.last = Some(Last { learned: std::mem::take(&mut self.learned), typed, text: text.to_string(), punct: 0, backspaces: 0 });
+        self.last = Some(Last { learned: std::mem::take(&mut self.learned), typed, text: text.to_string(), punct: 0, backspaces: 0, gen: self.ime.generation() });
     }
 
     /// 组字串里未转换的拼音:按当前高亮候选的切分加 `'`(`de'dao'zhe`),没有候选时原样。

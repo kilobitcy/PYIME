@@ -11,7 +11,7 @@ const A: i64 = 65;
 const O: i64 = 79;
 const W: i64 = 87;
 
-fn session() -> Session {
+fn engine() -> Engine {
     let mut b = DictBuilder::default();
     for (i, w) in "你泥尼拟逆腻匿溺".chars().enumerate() {
         b.add("ni", &w.to_string(), 9000 - i as u32 * 100);
@@ -19,8 +19,11 @@ fn session() -> Session {
     b.add("ni hao", "你好", 5000);
     b.add("hao", "好", 8000);
     b.add("wo", "我", 8000);
-    let engine = Engine::new(Dict::from_bytes(b.build().unwrap()).unwrap(), FuzzyConfig::default());
-    Session::new(Ime::with_engine(engine))
+    Engine::new(Dict::from_bytes(b.build().unwrap()).unwrap(), FuzzyConfig::default())
+}
+
+fn session() -> Session {
+    Session::new(Ime::with_engine(engine()))
 }
 
 fn key(s: &mut Session, method: &str, code: i64) -> Value {
@@ -909,4 +912,50 @@ fn 组字中左键单击托盘图标不切换() {
     assert_eq!(r["return"], false);
     assert!(r.get("changeButton").is_none() && r.get("commitString").is_none());
     assert_eq!(key(&mut s, "filterKeyDown", N)["return"], true);
+}
+
+fn menu_cmd(s: &mut Session, id: u64) -> Value {
+    s.handle(&json!({"method": "onCommand", "seqNum": 6, "id": id, "type": 2}))
+}
+
+#[test]
+fn 右键菜单含版本与三项命令() {
+    let mut s = win8_session();
+    let r = s.handle(&json!({"method": "onMenu", "seqNum": 5, "id": "windows-mode-icon"}));
+    let m = r["return"].as_array().unwrap();
+    assert_eq!(m[0]["text"], format!("PYIME {}", env!("CARGO_PKG_VERSION")));
+    assert_eq!(m[0]["enabled"], false);
+    assert_eq!(m[1], json!({}));
+    let texts: Vec<&str> = m.iter().filter_map(|i| i["text"].as_str()).collect();
+    assert_eq!(texts[1..], ["编辑用户词库…", "重新加载用户词库", "打开数据目录"]);
+    assert!(m.iter().filter(|i| i.get("text").is_some()).all(|i| i["id"].as_u64().unwrap() >= 1));
+}
+
+#[test]
+fn 菜单命令分发到编辑_重载与打开目录() {
+    let p = crate::ime::temp_user_path("menu-cmds");
+    let mut s = Session::new(Ime::with_user_path(engine(), p.clone()));
+    assert_eq!(menu_cmd(&mut s, 11)["return"], true);
+    assert_eq!(s.ime.take_launched(), vec![format!("notepad.exe {}", p.display())]);
+    std::fs::write(&p, "ni\t泥\t9").unwrap();
+    let r = s.handle(&json!({"method": "onMenu", "seqNum": 7, "id": "windows-mode-icon"}));
+    assert_eq!(r["return"][3]["text"], "重新加载用户词库(文件已修改)");
+    assert_eq!(menu_cmd(&mut s, 12)["return"], true);
+    assert!(s.ime.user_export().contains("ni\t泥\t9"));
+    assert_eq!(menu_cmd(&mut s, 13)["return"], true);
+    assert_eq!(s.ime.take_launched(), vec![format!("explorer.exe {}", p.parent().unwrap().display())]);
+    assert_eq!(menu_cmd(&mut s, 10)["return"], false); // 版本项置灰,收到也不处理
+}
+
+#[test]
+fn 重新加载后退格删光不撤回旧学习() {
+    let p = crate::ime::temp_user_path("gen");
+    let mut s = Session::new(Ime::with_user_path(engine(), p.clone()));
+    press(&mut s, &[N, I]);
+    press(&mut s, &[32]); // 空格选 你,学习并写盘
+    std::fs::write(&p, "ni\t你\t5").unwrap();
+    menu_cmd(&mut s, 12);
+    backs(&mut s, 1); // 应用删掉刚上屏的 你
+    let exported = s.ime.user_export();
+    assert!(exported.contains("ni\t你\t5"), "{exported}");
 }
