@@ -16,6 +16,7 @@ Windows 11 拼音输入法。目标:界面与功能像微信输入法一样简�
 - `crates/pyime-engine`:引擎(`dict` fst 词典、`rime` 词库导入、`pinyin` 音节表与切分格、`fuzzy` 10 对模糊音、`engine` 候选生成与整句 Viterbi、`user` 用户学习、`english` 英文词表与回车学习、`symbol` 符号表(精确整段词后附加符号));`pyime-dict-build` 编译词典、`pyime-en-build` 编译英文词表 `pyime.en`(自带 IT 词表 `installer/en_it.txt`)。
 - `crates/pyime-backend`:PIME 后端(`protocol`/`session`/`ime`/`log`/`register`);词典 `pyime.dict`、英文词表 `pyime.en`、符号表 `symbols.txt`(自带 `installer/symbols.txt`)放在 `server.exe` 同目录,用户数据 `%LOCALAPPDATA%\PYIME\user.txt`,用户英文词表 `en.txt`、回车学习计数 `en_learned.txt` 同目录。
 - `scripts/package.sh <版本>`:测试 + 交叉编译 + 编词典 + makensis 一条龙(rime-ice 默认在 /tmp/rime-ice)。
+- `scripts/windows/`:用户手工改 `user.txt` 后使其生效(`edit-user.bat` 停输入法→记事本编辑→重启;`reload-user.bat` 直接重启;逻辑在 `user-reload.ps1`,含备份、UTF-8 校验、去 BOM/CRLF)。ps1 须存为 UTF-8 BOM + CRLF,bat 保持纯 ASCII。
 - 调参观察:`PYIME_DICT=… cargo test -p pyime-engine --release --test real_engine -- --ignored --nocapture`(`PYIME_INPUTS` 指定拼音)。
 - 回归对照:`PYIME_DICT=$PWD/installer/pyime.dict PYIME_GRAM=/tmp/gram/pyime.gram PYIME_EN=$PWD/installer/pyime.en cargo test -q -p pyime-engine --release --test regression -- --ignored --nocapture`;输出按期望候选来源(整段词/整句/前缀词,·模糊)分桶的通过数。调参前加 `PYIME_RANKS_OUT=/tmp/base.tsv` 存逐例名次,调参后加 `PYIME_RANKS_BASE=/tmp/base.tsv` 逐例比对(救回首位/跌出首位/其余变化)。不设 `PYIME_EN` 则不载英文、不跑英文用例。
 
@@ -73,6 +74,24 @@ Windows 11 拼音输入法。目标:界面与功能像微信输入法一样简�
 - 模糊拼音:单独设置页,每对可单独开关(见上方 10 对)。
 - 用户确认:截图之外的其他微信设置(语音、跨设备、手机版、工具栏、常用语/剪贴板、表情推荐等)本项目不需要。
 - 词库:rime-ice(GPL-3.0-only,简体+词频)。
+
+### 符号候选(2026-10-22 合并到 main,0a0e7df;设计 `docs/superpowers/specs/2026-10-22-symbol-candidates-design.md`)
+- 按词挂:候选文字精确命中 `symbols.txt` 时,符号插在其紧后面,每词至多表内前 2 个,已在列表中的跳过。
+- 宿主只限精确整段词(`words` 中有 0→len、fuzzy==0、非残缺的同文字词);模糊、残缺补全(`sh`→上)、前缀词、只靠整句拼出的不挂。
+- 选中符号不学习、整句不学、上文清空(`session.rs` `select`)。
+- 收录原则:只收"打这个词多半就是要符号"的条目;不收 ASCII 符号、单位缩写、标点名、以普通词义为主的高频词;例外保留 上/下/左/右、一至十、破折号、间隔号(用户确认)。不收 emoji。
+- rime-ice `opencc/emoji.txt` 不合用(上→⬆️、二→2️⃣ 是彩色 emoji)。
+
+### user.txt 机制(据 `ime.rs`/`user.rs`)
+- server.exe 只在启动时读 `user.txt`;每次选词把内存数据整份覆盖写回。运行中手改的内容,下次选词即被覆盖。
+- 读取失败(非 UTF-8)时按空数据启动,下次选词写回空数据 → 学习数据全丢(风险点,尚未在代码里防护)。
+- 导入不处理 BOM(首行失效)与 CRLF(`\r` 致计数解析失败、整行跳过)。
+
+### 待办(截至 2026-10-22)
+- 实机验证测试包 `installer/PYIME-0.0.0-symcheck-setup.exe`:候选窗 `↑ ② ✓ ★` 是否显示为方框;选 `↑` 后 `user.txt` 无新增。
+- `scripts/windows/user-reload.ps1` 未在 Windows 实机运行过(本机无 pwsh,未做语法检查)。
+- 发版 0.1.15(含符号候选)未做,须先问用户。
+- 符号候选终审未修 Minor:"英文候选不挂符号"无单测;英文候选会被带符号的宿主挤后 1–2 位;`symbols.txt` 非 UTF-8 时整表跳过。
 
 ### 待查
 - PIME JSON 协议能否承载所需功能(需读源码确认)。
