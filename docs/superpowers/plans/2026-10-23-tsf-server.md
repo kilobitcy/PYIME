@@ -1172,7 +1172,9 @@ fn main() {
     use std::io::BufRead;
     use win::sys::*;
     const GENERIC_READ: u32 = 0x8000_0000;
-    const GENERIC_WRITE: u32 = 0x4000_0000;
+    // 与 DLL 相同的访问掩码:不要 GENERIC_WRITE(含建管道实例权限),见 win.rs 的 pipe_sddl
+    const FILE_WRITE_DATA: u32 = 0x2;
+    const FILE_WRITE_ATTRIBUTES: u32 = 0x100;
     const OPEN_EXISTING: u32 = 3;
     const PIPE_READMODE_MESSAGE: u32 = 0x2;
 
@@ -1183,7 +1185,7 @@ fn main() {
     let path = win::pipe_path(&user);
     let name = wide(&path);
     // SAFETY: name 以 NUL 结尾;不传安全属性与模板。
-    let h = unsafe { CreateFileW(name.as_ptr(), GENERIC_READ | GENERIC_WRITE, 0, std::ptr::null(), OPEN_EXISTING, 0, 0) };
+    let h = unsafe { CreateFileW(name.as_ptr(), GENERIC_READ | FILE_WRITE_DATA | FILE_WRITE_ATTRIBUTES, 0, std::ptr::null(), OPEN_EXISTING, 0, 0) };
     if h == INVALID_HANDLE_VALUE {
         eprintln!("连不上 {path}: 错误码 {}", last_error());
         std::process::exit(1);

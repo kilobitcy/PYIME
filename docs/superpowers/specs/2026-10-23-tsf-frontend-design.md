@@ -66,7 +66,7 @@ pyime-server.exe --supervise(监护进程,单实例;由 Run 键/安装器启动)
 - **监护进程**(`--supervise`;无参数仍是 PIME stdin 模式,过渡期 PIME 照旧这样启动后端):命名互斥量 `Local\PYIME-supervisor` 保单实例,已有则静默退出;循环启动 `--worker` 子进程并等待其退出;子进程 60s 内连续退出 5 次则停止重启并记日志(防词典缺失等致命错误刷屏);`--quit` 通知已运行的监护进程连同子进程退出(供安装器用):监护进程建命名事件 `Local\PYIME-quit`(DACL 允许当前用户与 Administrators 置位),`--quit` 打开并置位后等监护进程退出 ≤3s;事件不存在(监护进程不在)立即返回。
 - 过渡期 `server.exe` 改名后,`register.rs` 写入 `backends.json` 的可执行名同步改。
 - **worker**:先加载引擎,再建管道(加载期间 DLL 连不上,按键放行)。
-  - 安全描述符同 PIME Launcher(见"现状"),其中"登录 SID"改为当前用户 SID(管道名已含用户名,效果等同),SDDL 经 `ConvertStringSecurityDescriptorToSecurityDescriptorW`。
+  - 安全描述符同 PIME Launcher(见"现状"),其中"登录 SID"改为当前用户 SID(管道名已含用户名,效果等同),SDDL 经 `ConvertStringSecurityDescriptorToSecurityDescriptorW`。ALL APPLICATION PACKAGES 只授 `0x12019B`(读写,不含 `FILE_CREATE_PIPE_INSTANCE`),防商店应用另开同名实例截获其他程序的按键;客户端(DLL、pipe-cli)因此以 `GENERIC_READ | FILE_WRITE_DATA | FILE_WRITE_ATTRIBUTES` 打开,不用 `GENERIC_WRITE`。单条请求上限 1 MiB,超出读完丢弃并断开。
   - 首个管道实例带 `FILE_FLAG_FIRST_PIPE_INSTANCE`,失败(名字被占)记日志后退出。
   - 线程:accept 线程先建下一个实例再把连接交给该连接的 I/O 线程;请求经 mpsc 送唯一工作线程(拥有 `Rc<Ime>` 与全部 Session,保持单线程),回复经该连接的 channel 返回。
   - 看门狗:独立线程监视工作线程"当前请求开始时间",超过 5s 记日志并退出进程,由监护进程重启。
@@ -89,6 +89,8 @@ pyime-server.exe --supervise(监护进程,单实例;由 Run 键/安装器启动)
 | worker 崩溃 | 管道断开 → DLL 断线处理;监护进程重启;下次按键(退避期满)重连 |
 | 监护进程也没了(含 60s 内 5 次退出后主动停止) | 输入法失效、按键放行;重新登录或重装恢复(日志记下) |
 | 同一用户同时开两个登录会话 | 管道名跨会话共享,后一个会话的 worker 建首实例失败、无输入法。已知限制,不处理 |
+| 本机另一用户抢先建同名管道 | worker 建首实例失败(记日志、监护按策略重试后停止),DLL 可能连到冒名服务端。需本机另有恶意账户;不做对端校验(理由见组件 1),已知限制 |
+| 同用户低完整性进程另开同名实例 | 用户 SID 须保留建实例权限(worker 开后续实例要用),无法经 DACL 排除;同用户进程本可直接读该用户数据,已知限制 |
 | 锁屏/UAC 安全桌面(SYSTEM 身份) | 管道名 `SYSTEM\PYIME` 不存在,按键放行,同现状 |
 
 ## 测试
