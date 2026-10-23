@@ -66,11 +66,11 @@ pyime-server.exe --supervise(监护进程,单实例;由 Run 键/安装器启动)
 - **监护进程**(`--supervise`;无参数仍是 PIME stdin 模式,过渡期 PIME 照旧这样启动后端):命名互斥量 `Local\PYIME-supervisor` 保单实例,已有则静默退出;循环启动 `--worker` 子进程并等待其退出;子进程 60s 内连续退出 5 次则停止重启并记日志(防词典缺失等致命错误刷屏);`--quit` 通知已运行的监护进程连同子进程退出(供安装器用):监护进程建命名事件 `Local\PYIME-quit`(DACL 允许当前用户与 Administrators 置位),`--quit` 打开并置位后等监护进程退出 ≤3s;事件不存在(监护进程不在)立即返回。
 - 过渡期 `server.exe` 改名后,`register.rs` 写入 `backends.json` 的可执行名同步改。
 - **worker**:先加载引擎,再建管道(加载期间 DLL 连不上,按键放行)。
-  - 安全描述符同 PIME Launcher(见"现状"),SDDL 经 `ConvertStringSecurityDescriptorToSecurityDescriptorW`。
+  - 安全描述符同 PIME Launcher(见"现状"),其中"登录 SID"改为当前用户 SID(管道名已含用户名,效果等同),SDDL 经 `ConvertStringSecurityDescriptorToSecurityDescriptorW`。
   - 首个管道实例带 `FILE_FLAG_FIRST_PIPE_INSTANCE`,失败(名字被占)记日志后退出。
   - 线程:accept 线程先建下一个实例再把连接交给该连接的 I/O 线程;请求经 mpsc 送唯一工作线程(拥有 `Rc<Ime>` 与全部 Session,保持单线程),回复经该连接的 channel 返回。
   - 看门狗:独立线程监视工作线程"当前请求开始时间",超过 5s 记日志并退出进程,由监护进程重启。
-- `user.txt`、`en.txt`、`en_learned.txt` 写盘改为写临时文件再 rename(被看门狗/taskkill 打断时不截断);外部修改保护用的 mtime/长度在 rename 后记录。
+- `user.txt`、`en_learned.txt` 写盘(`en.txt` 服务端只读不写)改为写临时文件再 rename(被看门狗/taskkill 打断时不截断);外部修改保护用的 mtime/长度在 rename 后记录。
 - 过渡期保留 stdin 模式(PIME 后端)到第 6 步再删;届时删除 `protocol.rs`、`register.rs`、`main.rs` 的 stdin 循环/`--register`/`disinherit_std_handles`。
 - 开发工具 `pyime-pipe-cli.exe`(`crates/pyime-backend/src/bin/`):直连管道,读入 JSON 行、打印回复,用于第 2 步在 Windows 上单独验收服务端。不进安装包。
 
@@ -78,7 +78,7 @@ pyime-server.exe --supervise(监护进程,单实例;由 Run 键/安装器启动)
 - 64 位 Windows 且非 ARM64 才继续;`SetRegView 64`。
 - 装到 `$PROGRAMFILES64\PYIME`(Program Files 默认对 AppContainer 可读,不改 ACL):`pyime-server.exe`、词典/英文表/符号表/可选 gram、图标、`x64\PYIME.dll`、`x86\PYIME.dll`、各许可证、LGPL 源码获取说明。
 - 安装/升级顺序:`pyime-server.exe --quit`(再 `taskkill /F /IM pyime-server.exe` 兜底)→ 复制文件;占用中的 DLL 沿用现 `SwapDll` 的改名法(`installer/pyime.nsi:20-30`)→ `System32\regsvr32` 注 x64、`SysWOW64\regsvr32` 注 x86 → 写 HKLM Run `PYIME` = `pyime-server.exe --supervise` → 用 StdUtils `ExecShellAsUser` 以非提权身份启动(同 PIME `installer.nsi:28,588`)。
-- 迁移旧版:**在写新卸载登记之前**(键名同为 `PYIME`,先写会覆盖 `PimeDir`)读 `HKLM\...\Uninstall\PYIME\PimeDir`(现 `pyime.nsi:85`);存在则直接静默运行旧卸载程序 `ExecWait '"<PimeDir>\pyime\uninstall.exe" /S _?=<PimeDir>\pyime'`(它已含删条目、还原 `.orig`、重注册 PIME DLL,`pyime.nsi:93-108`),再删残留的 `uninstall.exe`。不卸载官方 PIME 本身;旧卸载会 `/quit` PIMELauncher 且不重启,用户若还用 PIME 的其他输入法,要到下次登录才恢复(安装完成页提示)。用户数据 `%LOCALAPPDATA%\PYIME` 不动。
+- 迁移旧版:旧附加包安装器是 32 位、未设注册表视图,其卸载登记在 32 位视图;先切 `SetRegView 32` 读 `HKLM\...\Uninstall\PYIME\PimeDir`(现 `pyime.nsi:85`);存在则直接静默运行旧卸载程序 `ExecWait '"<PimeDir>\pyime\uninstall.exe" /S _?=<PimeDir>\pyime'`(它已含删条目、还原 `.orig`、重注册 PIME DLL,`pyime.nsi:93-108`),再删残留的 `uninstall.exe`。不卸载官方 PIME 本身;旧卸载会 `/quit` PIMELauncher 且不重启,用户若还用 PIME 的其他输入法,要到下次登录才恢复(安装完成页提示)。用户数据 `%LOCALAPPDATA%\PYIME` 不动。
 - 卸载顺序:删 Run 键 → `--quit` + taskkill 兜底(监护进程先退,不会再重启 worker)→ regsvr32 /u 两份 → 删文件(占用中的 DLL 改名,`Delete /REBOOTOK`)。
 
 ## 错误处理汇总
@@ -87,7 +87,8 @@ pyime-server.exe --supervise(监护进程,单实例;由 Run 键/安装器启动)
 | 服务端未启动/加载中 | `WaitNamedPipe` ≤200ms 失败 → 退避期内按键放行,不冻宿主 |
 | 服务端卡死 | DLL 2s 超时 → 断线处理、放行、进入退避;worker 看门狗 5s 退出,监护进程重启 |
 | worker 崩溃 | 管道断开 → DLL 断线处理;监护进程重启;下次按键(退避期满)重连 |
-| 监护进程也没了 | 输入法失效、按键放行;重新登录或重装恢复(日志记下) |
+| 监护进程也没了(含 60s 内 5 次退出后主动停止) | 输入法失效、按键放行;重新登录或重装恢复(日志记下) |
+| 同一用户同时开两个登录会话 | 管道名跨会话共享,后一个会话的 worker 建首实例失败、无输入法。已知限制,不处理 |
 | 锁屏/UAC 安全桌面(SYSTEM 身份) | 管道名 `SYSTEM\PYIME` 不存在,按键放行,同现状 |
 
 ## 测试
@@ -101,7 +102,7 @@ pyime-server.exe --supervise(监护进程,单实例;由 Run 键/安装器启动)
 3. DLL 改连新管道、超时与退避、断线处理、日志、新 GUID。附 `test-kit/tsf-dev.bat`(regsvr32 注册/反注册两份 DLL、起停 `--supervise`),不依赖安装器即可实机验收。
 4. 安装器重写与迁移。
 5. 出实机测试包,用户按清单验证。
-6. 删除 PIME 遗留:stdin 协议代码、`pime/`、`scripts/build-pime-dll.sh`,改写 CLAUDE.md 的 PIME 段落(删除前列清单请用户确认)。
+6. 删除 PIME 遗留:stdin 协议代码、`pime/`、`scripts/build-pime-dll.sh`、`scripts/package-pime-zip.sh`、`installer/zip-pime/`、`installer/input_methods/`;`scripts/windows/user-reload.ps1` 改为停启 `pyime-server.exe`;改写 CLAUDE.md 的 PIME 段落(删除前列清单请用户确认)。
 
 ## 许可证
 项目 GPL-3.0-only。收编部分:libIME2 为 LGPL-2.1(`libIME2/LICENSE.txt`);PIMETextService 文件头为 "Library GPL v2 or later"(`PIMEClient.cpp:4-7`;PIME `LICENSE.txt:5-12` 记作 LGPL 2.0);jsoncpp 为公有领域/MIT;`tsf_compat.h` 取自 windows-rs(MIT/Apache-2.0)。收编部分不转 GPL,按原 LGPL 分发修改版(保留原声明),与 GPL-3 的其余部分组合发布;各许可证全文放 `tsf/`,并随安装包分发。
