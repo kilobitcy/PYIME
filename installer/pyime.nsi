@@ -156,7 +156,10 @@ Section "安装"
   ; "fallback":经 Explorer 降权启动失败,退回普通 ShellExecute,服务端已以提权身份运行,停掉它;
   ; 宁可等下次登录由 Run 键以普通用户身份启动
   ${If} $0 == "fallback"
-    ExecWait '"$INSTDIR\pyime-server.exe" --quit'
+    Sleep 1000 ; 刚启动的监护进程可能还没建好退出事件,--quit 落空时靠 StopServer 里的 taskkill 兜底
+    StrCpy $2 $0
+    !insertmacro StopServer
+    StrCpy $0 $2
   ${EndIf}
   ${If} $0 != "ok"
     MessageBox MB_ICONEXCLAMATION "未能以普通用户身份启动 PYIME 服务($0)。$\n请注销再登录一次后使用。" /SD IDOK
