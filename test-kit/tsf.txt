@@ -1,0 +1,35 @@
+﻿PYIME 0.0.0-tsfcheck 实机验证清单(独立安装包,不再需要 PIME)——精简版,约 10 分钟
+
+每项记"通过 / 不通过 + 现象"。不通过的附上 %LOCALAPPDATA%\PYIME\log.txt 与 tsf.log。
+user.txt 等用户数据全程不受影响。
+
+准备:先到之前的 tsf-dev 文件夹执行 tsf-dev.bat uninstall(否则以后再运行它会把正式版也注销掉)。
+     旧的 PIME 附加包版 PYIME 保持装着,不要先卸 PIME。
+
+一、从旧附加包升级
+ 1. 双击 PYIME-0.0.0-tsfcheck-setup.exe,同意管理员授权:无报错,结束时提示"已移除旧版 PYIME 附加包"。
+ 2. C:\Program Files\PYIME 下有 pyime-server.exe、x64\PYIME.dll、x86\PYIME.dll、licenses\、uninstall.exe。
+ 3. 键盘列表(设置 → 时间和语言 → 语言和区域 → 中文 → 键盘)里只有一个 PYIME;控制面板"程序和功能"里只有一个 PYIME,版本 0.0.0-tsfcheck。
+ 4. 任务管理器"详细信息":两个 pyime-server.exe,用户名是你自己(不是管理员/SYSTEM)。
+
+二、打字(每处打 ceshi 选"测试")
+ 5. 记事本、微信。
+ 6. 开始菜单搜索(按 Win 键直接打字)。
+ 7. Microsoft Store 搜索框。
+ 8. Edge 网页输入框。
+
+三、故障恢复
+ 9. 打着拼音(候选窗开着)时,任务管理器结束内存较大的那个 pyime-server.exe:拼音与候选窗消失、不残留;接着打字 1-2 秒内恢复中文。
+
+四、重启
+10. 重启电脑登录:无黑窗;直接能打中文;右键托盘"中"图标,首项显示"PYIME 0.1.15"。
+
+五、卸载官方 PIME(不再用 PIME 的其他输入法时)
+11. 控制面板卸载 PIME,注销再登录:PYIME 照常能打字。
+
+六、卸载与重装 PYIME
+12. 控制面板卸载 PYIME:无报错;键盘列表里 PYIME 消失;pyime-server.exe 消失;%LOCALAPPDATA%\PYIME 仍在。
+13. 再装一次:能打字,学过的词还在。
+
+七、可选:托盘菜单不可用时的备用脚本(edit-user.bat、reload-user.bat、user-reload.ps1 放同一文件夹)
+14. 双击 reload-user.bat:显示"输入法已停止""已备份到 …""输入法已重新启动";之后打字正常。
