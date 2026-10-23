@@ -10,7 +10,7 @@
 | `tsf_compat.h` | 声明取自 microsoft/windows-rs 的 Windows 元数据 | MIT / Apache-2.0 |
 
 收编部分按原许可证分发修改版,不转 GPL;与 PYIME 其余 GPL-3.0-only 部分组合发布。
-修改过的文件在版权块下注明 `PYIME 修改`,改动处注释以 `PYIME:` 开头。
+修改过的文件在版权块下注明 `PYIME 修改`,改动处注释以 `PYIME:` 开头;所有修改均由 PYIME 项目于 2026 年 10 月做出(逐次改动与日期见 git 历史)。`PIMETextService/PIMETextService.def` 也已修改(DLL 名改为 PYIME.dll)。
 
 收编时已合入的改动(原为 `pime/patches/`):
 - `pime-mingw.patch`:MSVC 专有写法改为可移植写法,使 mingw-w64 可编译。

@@ -1,3 +1,4 @@
+; PYIME 修改(2026-10):DLL 名由 PIMETextService.dll 改为 PYIME.dll
 LIBRARY PYIME.dll
 
 EXPORTS
