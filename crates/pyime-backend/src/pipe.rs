@@ -49,6 +49,12 @@ fn serve(h: Handle, conn: u64, tx: mpsc::Sender<Msg>) {
 }
 
 pub fn run() {
+    // worker 任一线程 panic 都退出进程,交监护进程重启(退出码 4;3 为看门狗)
+    let prev = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        prev(info);
+        std::process::exit(4);
+    }));
     let Some(user) = user_name() else { return log::line("取不到用户名,退出") };
     let Some(sid) = user_sid() else { return log::line("取不到用户 SID,退出") };
     let Some(sec) = Security::from_sddl(&win::pipe_sddl(&sid)) else {
@@ -84,7 +90,9 @@ pub fn run() {
     let mut conn = 0u64;
     loop {
         // SAFETY: h 是有效的管道实例句柄;同步等待客户端连接。
-        let connected = unsafe { ConnectNamedPipe(h, std::ptr::null_mut()) } != 0 || last_error() == ERROR_PIPE_CONNECTED;
+        let ok = unsafe { ConnectNamedPipe(h, std::ptr::null_mut()) } != 0;
+        let err = last_error(); // 立即取,后面建实例会覆盖
+        let connected = ok || err == ERROR_PIPE_CONNECTED;
         // 先建好下一个实例再分发,两次连接之间客户端不会找不到管道
         let Some(next) = create_instance(&name, &sec, false) else { break };
         if connected {
@@ -92,7 +100,7 @@ pub fn run() {
             let tx = tx.clone();
             std::thread::spawn(move || serve(h, conn, tx));
         } else {
-            log::line(&format!("等待连接失败: 错误码 {}", last_error()));
+            log::line(&format!("等待连接失败: 错误码 {err}"));
             // SAFETY: 未交给任何线程的实例句柄,关闭后不再使用。
             unsafe { CloseHandle(h) };
         }
