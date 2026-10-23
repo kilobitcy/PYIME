@@ -89,9 +89,10 @@ Function MigrateAddon
   Call IsUnderProgramFiles
   ${If} $1 != ""
   ${AndIf} $R1 != "1"
+  ${AndIf} ${FileExists} "$1\pyime\uninstall.exe"
     ; 不在 Program Files 下的旧卸载程序可能被普通用户替换,不以管理员身份执行
     DetailPrint "旧版附加包在 $1\pyime,不在 Program Files 下,跳过自动卸载"
-    MessageBox MB_ICONEXCLAMATION "检测到旧版 PYIME 附加包装在 $1\pyime。$\n出于安全考虑不自动卸载,请装完后在控制面板手动卸载它。" /SD IDOK
+    MessageBox MB_ICONEXCLAMATION "检测到旧版 PYIME 附加包装在 $1\pyime(不在 Program Files 下)。$\n出于安全考虑不自动卸载。确认该目录只有你本人能修改后,再在控制面板手动卸载它(卸载程序会以管理员身份运行)。" /SD IDOK
   ${ElseIf} $1 != ""
   ${AndIf} ${FileExists} "$1\pyime\uninstall.exe"
     DetailPrint "发现旧版 PYIME 附加包:$1\pyime,先卸载"
@@ -103,6 +104,11 @@ Function MigrateAddon
     DeleteRegKey HKLM "${UNINST_KEY}" ; 旧卸载程序正常会删,失败时兜底
     SetRegView 64
     StrCpy $Migrated "1"
+  ${ElseIf} $1 != ""
+    ; 旧卸载程序已不在(如 PIME 已先被卸载):只清掉残留的 32 位卸载登记
+    SetRegView 32
+    DeleteRegKey HKLM "${UNINST_KEY}"
+    SetRegView 64
   ${EndIf}
 FunctionEnd
 
@@ -134,6 +140,8 @@ Section "安装"
   WriteRegStr HKLM "${UNINST_KEY}" "DisplayVersion" "${VERSION}"
   WriteRegStr HKLM "${UNINST_KEY}" "InstallLocation" "$INSTDIR"
   ; 32 位安装器:Sysnative 指向真正的 64 位 System32,SysWOW64 是 32 位 regsvr32
+  StrCpy $0 "-1" ; regsvr32 启动不了时 ExecWait 不写返回值,哨兵值保证判为失败
+  StrCpy $1 "-1"
   ExecWait '"$WINDIR\Sysnative\regsvr32.exe" /s "$INSTDIR\x64\PYIME.dll"' $0
   ExecWait '"$WINDIR\SysWOW64\regsvr32.exe" /s "$INSTDIR\x86\PYIME.dll"' $1
   ${If} $0 <> 0
@@ -145,9 +153,12 @@ Section "安装"
   ; 不能直接 Exec:安装器是提权的,服务端会以管理员身份运行(菜单开的记事本也跟着提权)
   ${StdUtils.ExecShellAsUser} $0 "$INSTDIR\pyime-server.exe" "open" "--supervise"
   DetailPrint "启动 pyime-server.exe --supervise:$0"
-  ; "fallback" 只出现在关了 UAC 的系统上(没有拆分令牌,登录后 Run 键启动的也是同一身份),照常使用
+  ; "fallback":经 Explorer 降权启动失败,退回普通 ShellExecute,服务端已以提权身份运行,停掉它;
+  ; 宁可等下次登录由 Run 键以普通用户身份启动
+  ${If} $0 == "fallback"
+    ExecWait '"$INSTDIR\pyime-server.exe" --quit'
+  ${EndIf}
   ${If} $0 != "ok"
-  ${AndIf} $0 != "fallback"
     MessageBox MB_ICONEXCLAMATION "未能以普通用户身份启动 PYIME 服务($0)。$\n请注销再登录一次后使用。" /SD IDOK
   ${EndIf}
   ${If} $Migrated == "1"
