@@ -9,8 +9,11 @@ pub fn pipe_path(user: &str) -> String {
 
 /// 管道安全描述符(同 PIME Launcher,`PipeSecurity.cpp:123-149`):拒绝网络访问;允许 SYSTEM、
 /// Administrators、ALL APPLICATION PACKAGES 与当前用户;低完整性标签,让 AppContainer/低完整性宿主里的 DLL 能连上。
+/// AC 的访问掩码 0x12019B = FILE_GENERIC_READ|FILE_GENERIC_WRITE 去掉 FILE_APPEND_DATA(即
+/// FILE_CREATE_PIPE_INSTANCE):防商店应用另开同名管道实例截获按键。客户端因此须以
+/// GENERIC_READ|FILE_WRITE_DATA|FILE_WRITE_ATTRIBUTES 打开管道。
 pub fn pipe_sddl(user_sid: &str) -> String {
-    format!("D:(D;;GA;;;NU)(A;;GA;;;SY)(A;;GA;;;BA)(A;;GA;;;AC)(A;;GA;;;{user_sid})S:(ML;;NWNR;;;LW)")
+    format!("D:(D;;GA;;;NU)(A;;GA;;;SY)(A;;GA;;;BA)(A;;0x12019B;;;AC)(A;;GA;;;{user_sid})S:(ML;;NWNR;;;LW)")
 }
 
 /// 退出事件与互斥量的安全描述符:只允许 SYSTEM、Administrators(提权安装器)与当前用户,不对应用容器开放。
@@ -99,7 +102,8 @@ pub mod sys {
         let mut buf = [0u64; 64];
         let mut len = 0u32;
         // SAFETY: token/buf/len 均为本地变量;TOKEN_USER 的首字段是指向 buf 内部的 SID 指针,
-        // ConvertSidToStringSidW 分配的字符串读完后 LocalFree。
+        // ConvertSidToStringSidW 分配的字符串读完后 LocalFree;该函数返回 NUL 结尾的字符串,
+        // 下面的 take_while 依赖这一点定位结尾。
         unsafe {
             if OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &mut token) == 0 {
                 return None;
@@ -121,7 +125,7 @@ pub mod sys {
         }
     }
 
-    /// 由 SDDL 生成的安全属性,析构时释放描述符。
+    /// 由 SDDL 生成的安全属性,析构时释放描述符。内含裸指针,因此是 !Send,需在使用它的线程内构造。
     pub struct Security {
         pub attrs: SecurityAttributes,
     }
@@ -146,25 +150,36 @@ pub mod sys {
         }
     }
 
-    /// 读一条完整消息(消息模式;超过缓冲区时循环处理 ERROR_MORE_DATA)。对端断开或出错返回 None。
+    /// 单条消息上限:防能连管道的进程用超大消息耗尽 worker 内存。
+    pub const MAX_MESSAGE: usize = 1 << 20;
+
+    /// 读一条完整消息(消息模式;超过缓冲区时循环处理 ERROR_MORE_DATA)。对端断开或出错返回 None;
+    /// 超过 MAX_MESSAGE 时把该条读完丢弃,返回 None。`h` 须为非重叠(同步)消息模式管道句柄。
     pub fn read_message(h: Handle) -> Option<Vec<u8>> {
         let mut msg = Vec::new();
+        let mut too_big = false;
         let mut buf = [0u8; 4096];
         loop {
             let mut n = 0u32;
             // SAFETY: buf 为本地缓冲区,长度如实传入;同步句柄,不传 OVERLAPPED。
             let ok = unsafe { ReadFile(h, buf.as_mut_ptr(), buf.len() as u32, &mut n, std::ptr::null_mut()) };
-            msg.extend_from_slice(&buf[..n as usize]);
-            if ok != 0 {
-                return Some(msg);
+            // 先取错误码,免得后面的扩容等操作覆盖它
+            let err = if ok == 0 { last_error() } else { 0 };
+            if msg.len() + n as usize > MAX_MESSAGE {
+                too_big = true;
+            } else if !too_big {
+                msg.extend_from_slice(&buf[..n as usize]);
             }
-            if last_error() != ERROR_MORE_DATA {
+            if ok != 0 {
+                return if too_big { None } else { Some(msg) };
+            }
+            if err != ERROR_MORE_DATA {
                 return None;
             }
         }
     }
 
-    /// 写一条完整消息。
+    /// 写一条完整消息。`h` 须为非重叠(同步)消息模式管道句柄。
     pub fn write_message(h: Handle, data: &[u8]) -> bool {
         let mut n = 0u32;
         // SAFETY: data 在调用期间有效,长度如实传入;同步句柄。
@@ -186,7 +201,7 @@ mod tests {
     fn 管道sddl同_pime_launcher() {
         assert_eq!(
             pipe_sddl("S-1-5-21-1-2-3-1001"),
-            "D:(D;;GA;;;NU)(A;;GA;;;SY)(A;;GA;;;BA)(A;;GA;;;AC)(A;;GA;;;S-1-5-21-1-2-3-1001)S:(ML;;NWNR;;;LW)"
+            "D:(D;;GA;;;NU)(A;;GA;;;SY)(A;;GA;;;BA)(A;;0x12019B;;;AC)(A;;GA;;;S-1-5-21-1-2-3-1001)S:(ML;;NWNR;;;LW)"
         );
     }
 
