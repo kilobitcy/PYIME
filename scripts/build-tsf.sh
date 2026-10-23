@@ -51,6 +51,11 @@ build() {  # build <x64|x86>
     grep -qw "$sym" <<<"$DUMP" || { echo "$1 DLL 缺导出 $sym,中止" >&2; exit 1; }
   done
 }
+
+# 纯逻辑单测(本机 g++)
+g++ -std=c++17 -Wall -I"$SRC/PIMETextService" "$SRC/tests/backoff_test.cpp" -o "$SHIM/backoff_test"
+"$SHIM/backoff_test"
+
 build x64
 build x86
 ls -l "$OUTDIR"/*/"$DLL"
