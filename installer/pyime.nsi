@@ -1,109 +1,159 @@
-; PYIME 附加安装包:把 PYIME 后端装进已安装的 PIME,并重新注册 TSF。需先安装官方 PIME。
+; PYIME 安装包:自带 TSF 前端(x64\、x86\PYIME.dll)与 pyime-server.exe,不需要官方 PIME。
+; 装过旧版"PIME 附加包"的,安装时先静默运行其卸载程序(删 backends.json 条目、还原 PIME 原版 DLL)。
 Unicode true
 !include "LogicLib.nsh"
 !include "x64.nsh"
+!addincludedir "nsis\StdUtils\Include"
+!addplugindir /x86-unicode "nsis\StdUtils\Plugins\Release_Unicode"
+!include "StdUtils.nsh" ; ${StdUtils.ExecShellAsUser}:从提权安装器以普通用户身份启动
 !ifndef VERSION
   !define VERSION "0.0.0"
 !endif
-!define PIME_KEY "Software\PIME"
 !define UNINST_KEY "Software\Microsoft\Windows\CurrentVersion\Uninstall\PYIME"
+!define RUN_KEY "Software\Microsoft\Windows\CurrentVersion\Run"
 
 Name "PYIME ${VERSION}"
 OutFile "PYIME-${VERSION}-setup.exe"
 RequestExecutionLevel admin
-InstallDir "$PROGRAMFILES32\PIME"
+InstallDir "$PROGRAMFILES64\PYIME"
 ShowInstDetails show
+ShowUninstDetails show
+Page instfiles
+UninstPage uninstConfirm
+UninstPage instfiles
 
-; 替换 PIME 的候选窗 DLL(本项目补丁版:候选按自身宽度排版,见 pime/patches)。
-; 已运行的程序占用着旧 DLL,无法覆盖但可改名:首次把官方原版改名为 .orig 备份,
-; 重复安装时把上一版改名挪开,再放新文件;挪开的旧文件下次重启时删除。无需重启/注销。
-!macro SwapDll ARCH
-  Delete "$INSTDIR\${ARCH}\PIMETextService.dll.old-*"
-  IfFileExists "$INSTDIR\${ARCH}\PIMETextService.dll.orig" +3
-    Rename "$INSTDIR\${ARCH}\PIMETextService.dll" "$INSTDIR\${ARCH}\PIMETextService.dll.orig"
-    Goto +4
-  System::Call 'kernel32::GetTickCount()i.r9'
-  Rename "$INSTDIR\${ARCH}\PIMETextService.dll" "$INSTDIR\${ARCH}\PIMETextService.dll.old-$9"
-  Delete /REBOOTOK "$INSTDIR\${ARCH}\PIMETextService.dll.old-$9"
-  SetOutPath "$INSTDIR\${ARCH}"
-  File "/oname=PIMETextService.dll" "..\target\tsf\${ARCH}\PIMETextService.dll"
+Var Migrated
+
+; 占用中的文件(已加载 DLL 的程序、未退出的进程)不能覆盖或删除,但可以改名:
+; 改名为 .old-<毫秒数> 挪开,下次重启时删除。无需重启/注销。
+!macro RetireFile PATH
+  ${If} ${FileExists} "${PATH}"
+    System::Call 'kernel32::GetTickCount()i.r9'
+    Rename "${PATH}" "${PATH}.old-$9"
+    Delete /REBOOTOK "${PATH}.old-$9"
+  ${EndIf}
 !macroend
 
-; 卸载时还原官方原版 DLL
-!macro RestoreDll ARCH
-  Delete "$INSTDIR\${ARCH}\PIMETextService.dll.old-*"
-  IfFileExists "$INSTDIR\${ARCH}\PIMETextService.dll.orig" 0 +5
-    System::Call 'kernel32::GetTickCount()i.r9'
-    Rename "$INSTDIR\${ARCH}\PIMETextService.dll" "$INSTDIR\${ARCH}\PIMETextService.dll.old-$9"
-    Delete /REBOOTOK "$INSTDIR\${ARCH}\PIMETextService.dll.old-$9"
-    Rename "$INSTDIR\${ARCH}\PIMETextService.dll.orig" "$INSTDIR\${ARCH}\PIMETextService.dll"
+; 清掉上次挪开的旧文件(仍被占用的删不掉,留着),挪开当前文件,放入新文件
+!macro SwapFile DIR NAME SRC
+  Delete "${DIR}\${NAME}.old-*"
+  !insertmacro RetireFile "${DIR}\${NAME}"
+  SetOutPath "${DIR}"
+  File "/oname=${NAME}" "${SRC}"
+!macroend
+
+; 先请监护进程连同 worker 退出(≤3s),再按名强杀兜底(含其他用户会话里的实例)
+!macro StopServer
+  ${If} ${FileExists} "$INSTDIR\pyime-server.exe"
+    ExecWait '"$INSTDIR\pyime-server.exe" --quit'
+  ${EndIf}
+  nsExec::Exec '"$SYSDIR\taskkill.exe" /F /IM pyime-server.exe'
+  Pop $0
 !macroend
 
 Function .onInit
-  ReadRegStr $0 HKLM "${PIME_KEY}" ""
-  StrCmp $0 "" +2
-  StrCpy $INSTDIR $0
-  IfFileExists "$INSTDIR\backends.json" +3
-    MessageBox MB_ICONSTOP "未找到 PIME($INSTDIR\backends.json)。请先安装官方 PIME。"
+  ; RunningX64 在 ARM64 上对 32 位安装器返回假;两者都判,提示更明确
+  ${IfNot} ${RunningX64}
+  ${OrIf} ${IsNativeARM64}
+    MessageBox MB_ICONSTOP "PYIME 只支持 x64 版 Windows(不支持 32 位与 ARM64)。" /SD IDOK
     Abort
+  ${EndIf}
+  SetRegView 64
+FunctionEnd
+
+; 旧版附加包(0.1.x,装在 PIME 目录下的 pyime\)由 32 位安装器写入 32 位注册表视图,
+; 键名与新版同为 PYIME。必须在写新卸载登记之前读出 PimeDir。
+; 旧卸载程序(旧 pyime.nsi:93-108)已含:PIMELauncher /quit、--unregister、还原 .orig、重注册 PIME DLL、删 pyime\。
+; `_?=` 让它原地运行(不复制到临时目录),ExecWait 才能等到它结束;它删不掉自身,随后由这里删。
+Function MigrateAddon
+  StrCpy $Migrated "0"
+  SetRegView 32
+  ReadRegStr $1 HKLM "${UNINST_KEY}" "PimeDir"
+  SetRegView 64
+  ${If} $1 != ""
+  ${AndIf} ${FileExists} "$1\pyime\uninstall.exe"
+    DetailPrint "发现旧版 PYIME 附加包:$1\pyime,先卸载"
+    ExecWait '"$1\pyime\uninstall.exe" /S _?=$1\pyime' $0
+    DetailPrint "旧版卸载程序返回 $0"
+    Delete "$1\pyime\uninstall.exe"
+    RMDir "$1\pyime"
+    SetRegView 32
+    DeleteRegKey HKLM "${UNINST_KEY}" ; 旧卸载程序正常会删,失败时兜底
+    SetRegView 64
+    StrCpy $Migrated "1"
+  ${EndIf}
 FunctionEnd
 
 Section "安装"
-  ExecWait '"$INSTDIR\PIMELauncher.exe" /quit'
-  SetOutPath "$INSTDIR\pyime"
-  Delete "$INSTDIR\pyime\server.exe"  ; 0.1.15 之前的旧名,Launcher 已退出,不再占用
-  File "pyime-server.exe"
+  Call MigrateAddon
+  !insertmacro StopServer
+  !insertmacro SwapFile "$INSTDIR" "pyime-server.exe" "pyime-server.exe"
+  SetOutPath "$INSTDIR"
   File "pyime.dict"
   File "pyime.en"
   File "symbols.txt"
   File "NOTICE.md"
-  ; 托盘中/英模式图标(取自 PIME,见 NOTICE.md)
-  SetOutPath "$INSTDIR\pyime\icons"
+  File /r "licenses" ; GPL-3.0 与收编 TSF 部分的 LGPL 等全文(scripts/package.sh 生成)
+  ; 托盘中/英模式图标:pyime-server.exe 从同目录 icons\ 取(tray.rs)
+  SetOutPath "$INSTDIR\icons"
   File "icons\chi_full_capsoff.ico"
   File "icons\eng_full_capsoff.ico"
-  SetOutPath "$INSTDIR\pyime"
   ; 可选语法模型:安装程序旁边有 pyime.gram 就一并装上(体积大,单独下载)
-  IfFileExists "$EXEDIR\pyime.gram" 0 +2
-    CopyFiles /SILENT "$EXEDIR\pyime.gram" "$INSTDIR\pyime\pyime.gram"
-  SetOutPath "$INSTDIR\pyime\input_methods\pyime"
-  File "input_methods\pyime\ime.json"
-  nsExec::ExecToLog '"$INSTDIR\pyime\pyime-server.exe" --register "$INSTDIR"'
-  Pop $0
-  StrCmp $0 "0" +3
-    MessageBox MB_ICONSTOP "登记 backends.json 失败(代码 $0)。"
-    Abort
-  !insertmacro SwapDll x86
-  ExecWait '"$SYSDIR\regsvr32.exe" /s "$INSTDIR\x86\PIMETextService.dll"'
-  ${If} ${RunningX64}
-    !insertmacro SwapDll x64
-    ExecWait '"$SYSDIR\regsvr32.exe" /s "$INSTDIR\x64\PIMETextService.dll"'
+  ${If} ${FileExists} "$EXEDIR\pyime.gram"
+    CopyFiles /SILENT "$EXEDIR\pyime.gram" "$INSTDIR\pyime.gram"
   ${EndIf}
-  SetRebootFlag false  ; 挪开的旧 DLL 留待下次重启删除即可,不提示重启
-  WriteUninstaller "$INSTDIR\pyime\uninstall.exe"
+  !insertmacro SwapFile "$INSTDIR\x64" "PYIME.dll" "..\target\tsf\x64\PYIME.dll"
+  !insertmacro SwapFile "$INSTDIR\x86" "PYIME.dll" "..\target\tsf\x86\PYIME.dll"
+  ; 32 位安装器:Sysnative 指向真正的 64 位 System32,SysWOW64 是 32 位 regsvr32
+  ExecWait '"$WINDIR\Sysnative\regsvr32.exe" /s "$INSTDIR\x64\PYIME.dll"' $0
+  ExecWait '"$WINDIR\SysWOW64\regsvr32.exe" /s "$INSTDIR\x86\PYIME.dll"' $1
+  ${If} $0 <> 0
+  ${OrIf} $1 <> 0
+    MessageBox MB_ICONSTOP "注册输入法 DLL 失败(x64 返回 $0,x86 返回 $1)。" /SD IDOK
+    Abort
+  ${EndIf}
+  SetRebootFlag false ; 挪开的旧文件留待下次重启删除即可,不提示重启
+  WriteUninstaller "$INSTDIR\uninstall.exe"
   WriteRegStr HKLM "${UNINST_KEY}" "DisplayName" "PYIME ${VERSION}"
-  WriteRegStr HKLM "${UNINST_KEY}" "UninstallString" '"$INSTDIR\pyime\uninstall.exe"'
+  WriteRegStr HKLM "${UNINST_KEY}" "UninstallString" '"$INSTDIR\uninstall.exe"'
   WriteRegStr HKLM "${UNINST_KEY}" "DisplayVersion" "${VERSION}"
-  WriteRegStr HKLM "${UNINST_KEY}" "PimeDir" "$INSTDIR"
-  ExecShell "open" "$INSTDIR\PIMELauncher.exe"
+  WriteRegStr HKLM "${UNINST_KEY}" "InstallLocation" "$INSTDIR"
+  WriteRegStr HKLM "${RUN_KEY}" "PYIME" '"$INSTDIR\pyime-server.exe" --supervise'
+  ; 不能直接 Exec:安装器是提权的,服务端会以管理员身份运行(菜单开的记事本也跟着提权)
+  ${StdUtils.ExecShellAsUser} $0 "$INSTDIR\pyime-server.exe" "open" "--supervise"
+  DetailPrint "启动 pyime-server.exe --supervise:$0"
+  ${If} $Migrated == "1"
+    MessageBox MB_ICONINFORMATION "已移除旧版 PYIME 附加包,并还原了 PIME 的原版 DLL。$\n如果你还在用 PIME 的其他输入法,需注销再登录一次才能恢复。" /SD IDOK
+  ${EndIf}
 SectionEnd
 
 Function un.onInit
-  ReadRegStr $INSTDIR HKLM "${UNINST_KEY}" "PimeDir"
+  SetRegView 64
 FunctionEnd
 
+; 顺序:先删 Run 键并停监护进程(之后不会再有人拉起 worker),再反注册、删文件
 Section "Uninstall"
-  ExecWait '"$INSTDIR\PIMELauncher.exe" /quit'
-  nsExec::ExecToLog '"$INSTDIR\pyime\pyime-server.exe" --unregister "$INSTDIR"'
-  ; 先 /u 清除含本输入法的 TSF 注册,还原官方 DLL 后再按更新后的 backends.json 重新注册
-  ExecWait '"$SYSDIR\regsvr32.exe" /u /s "$INSTDIR\x86\PIMETextService.dll"'
-  !insertmacro RestoreDll x86
-  ExecWait '"$SYSDIR\regsvr32.exe" /s "$INSTDIR\x86\PIMETextService.dll"'
-  ${If} ${RunningX64}
-    ExecWait '"$SYSDIR\regsvr32.exe" /u /s "$INSTDIR\x64\PIMETextService.dll"'
-    !insertmacro RestoreDll x64
-    ExecWait '"$SYSDIR\regsvr32.exe" /s "$INSTDIR\x64\PIMETextService.dll"'
-  ${EndIf}
+  DeleteRegValue HKLM "${RUN_KEY}" "PYIME"
+  !insertmacro StopServer
+  ExecWait '"$WINDIR\Sysnative\regsvr32.exe" /u /s "$INSTDIR\x64\PYIME.dll"'
+  ExecWait '"$WINDIR\SysWOW64\regsvr32.exe" /u /s "$INSTDIR\x86\PYIME.dll"'
+  Delete "$INSTDIR\x64\PYIME.dll.old-*"
+  Delete "$INSTDIR\x86\PYIME.dll.old-*"
+  !insertmacro RetireFile "$INSTDIR\x64\PYIME.dll"
+  !insertmacro RetireFile "$INSTDIR\x86\PYIME.dll"
+  Delete "$INSTDIR\pyime-server.exe.old-*"
+  !insertmacro RetireFile "$INSTDIR\pyime-server.exe"
+  Delete "$INSTDIR\pyime.dict"
+  Delete "$INSTDIR\pyime.en"
+  Delete "$INSTDIR\symbols.txt"
+  Delete "$INSTDIR\pyime.gram"
+  Delete "$INSTDIR\NOTICE.md"
+  RMDir /r "$INSTDIR\icons"
+  RMDir /r "$INSTDIR\licenses"
+  Delete "$INSTDIR\uninstall.exe"
+  RMDir /REBOOTOK "$INSTDIR\x64"
+  RMDir /REBOOTOK "$INSTDIR\x86"
+  RMDir /REBOOTOK "$INSTDIR"
   SetRebootFlag false
   DeleteRegKey HKLM "${UNINST_KEY}"
-  RMDir /r "$INSTDIR\pyime"
 SectionEnd

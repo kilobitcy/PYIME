@@ -1,5 +1,6 @@
 target/
 installer/pyime-server.exe
+installer/licenses/
 installer/*-setup.exe
 installer/pyime.dict
 installer/pyime.en
