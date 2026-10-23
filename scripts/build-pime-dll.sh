@@ -24,7 +24,7 @@ mv "$SRC/resource.h.tmp" "$SRC/PIMETextService/resource.h"
 # 头文件大小写垫片(源码按 Windows 大小写不敏感写 include)
 SHIM=$(mktemp -d)
 trap 'rm -rf "$SHIM"' EXIT
-cp "$ROOT/pime/tsf_compat.h" "$SHIM/"
+cp "$ROOT/tsf/tsf_compat.h" "$SHIM/"
 INC=/usr/x86_64-w64-mingw32/include
 for h in ObjBase.h OleCtl.h Shellapi.h ShlObj.h Shlwapi.h Unknwn.h VersionHelpers.h Windows.h Winnls.h; do
   ln -s "$INC/${h,,}" "$SHIM/$h"
