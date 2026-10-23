@@ -12,6 +12,8 @@ mod session;
 #[cfg_attr(not(windows), allow(dead_code))] // 监护进程只在 Windows 运行;纯逻辑在 Linux 上单测
 mod supervise;
 mod tray;
+#[allow(dead_code)] // sys 里部分声明(CreateFileW 等)只给 pyime-pipe-cli 用;纯字符串函数在 Linux 上只被测试用
+mod win;
 
 use std::collections::HashMap;
 use std::io::{self, BufRead, Write};
