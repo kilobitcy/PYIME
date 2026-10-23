@@ -6,10 +6,10 @@ VERSION=${1:?用法: scripts/package.sh <版本> [rime-ice 目录]}
 RIME=${2:-/tmp/rime-ice}
 cargo test --workspace
 cargo build --release --target x86_64-pc-windows-gnu -p pyime-backend
-cp target/x86_64-pc-windows-gnu/release/pyime-backend.exe installer/server.exe
+cp target/x86_64-pc-windows-gnu/release/pyime-server.exe installer/pyime-server.exe
 scripts/build-tsf.sh  # 收编的 TSF DLL → target/tsf/{x64,x86}(源码见 tsf/README.md)
-if x86_64-w64-mingw32-objdump -p installer/server.exe | grep -E 'DLL Name: (libgcc|libwinpthread)'; then
-  echo "server.exe 依赖了 mingw 运行库,中止" >&2; exit 1
+if x86_64-w64-mingw32-objdump -p installer/pyime-server.exe | grep -E 'DLL Name: (libgcc|libwinpthread)'; then
+  echo "pyime-server.exe 依赖了 mingw 运行库,中止" >&2; exit 1
 fi
 D="$RIME/cn_dicts"
 cargo run --release -q -p pyime-engine --bin pyime-dict-build -- installer/pyime.dict \

@@ -1,3 +1,5 @@
+// GUI 子系统:由监护进程/Run 键/PIMELauncher 启动时不弹控制台窗;stdin/stdout 由启动方经 STARTUPINFO 传入,照常可用。
+#![cfg_attr(windows, windows_subsystem = "windows")]
 mod ime;
 mod inputlog;
 mod log;
@@ -66,7 +68,7 @@ fn main() {
     disinherit_std_handles();
     let ime = ime::Ime::load();
     log::line(&format!(
-        "启动 pyime-backend {} args={:?} exe={:?}",
+        "启动 pyime-server {} args={:?} exe={:?}",
         env!("CARGO_PKG_VERSION"),
         args,
         std::env::current_exe().ok()

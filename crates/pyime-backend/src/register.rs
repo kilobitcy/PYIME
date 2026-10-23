@@ -6,7 +6,7 @@ pub const BACKEND_NAME: &str = "pyime";
 fn entry() -> Value {
     json!({
         "name": BACKEND_NAME,
-        "command": "pyime\\server.exe",
+        "command": "pyime\\pyime-server.exe",
         "workingDir": "pyime",
         "params": ""
     })
@@ -68,5 +68,11 @@ mod tests {
     #[test]
     fn 非数组报错() {
         assert!(add_backend("{}").is_err());
+    }
+
+    #[test]
+    fn 登记的可执行文件为_pyime_server() {
+        let list = parse_list(&add_backend(BASE).unwrap()).unwrap();
+        assert_eq!(list[1]["command"], "pyime\\pyime-server.exe");
     }
 }

@@ -51,7 +51,8 @@ FunctionEnd
 Section "安装"
   ExecWait '"$INSTDIR\PIMELauncher.exe" /quit'
   SetOutPath "$INSTDIR\pyime"
-  File "server.exe"
+  Delete "$INSTDIR\pyime\server.exe"  ; 0.1.15 之前的旧名,Launcher 已退出,不再占用
+  File "pyime-server.exe"
   File "pyime.dict"
   File "pyime.en"
   File "symbols.txt"
@@ -66,7 +67,7 @@ Section "安装"
     CopyFiles /SILENT "$EXEDIR\pyime.gram" "$INSTDIR\pyime\pyime.gram"
   SetOutPath "$INSTDIR\pyime\input_methods\pyime"
   File "input_methods\pyime\ime.json"
-  nsExec::ExecToLog '"$INSTDIR\pyime\server.exe" --register "$INSTDIR"'
+  nsExec::ExecToLog '"$INSTDIR\pyime\pyime-server.exe" --register "$INSTDIR"'
   Pop $0
   StrCmp $0 "0" +3
     MessageBox MB_ICONSTOP "登记 backends.json 失败(代码 $0)。"
@@ -92,7 +93,7 @@ FunctionEnd
 
 Section "Uninstall"
   ExecWait '"$INSTDIR\PIMELauncher.exe" /quit'
-  nsExec::ExecToLog '"$INSTDIR\pyime\server.exe" --unregister "$INSTDIR"'
+  nsExec::ExecToLog '"$INSTDIR\pyime\pyime-server.exe" --unregister "$INSTDIR"'
   ; 先 /u 清除含本输入法的 TSF 注册,还原官方 DLL 后再按更新后的 backends.json 重新注册
   ExecWait '"$SYSDIR\regsvr32.exe" /u /s "$INSTDIR\x86\PIMETextService.dll"'
   !insertmacro RestoreDll x86
