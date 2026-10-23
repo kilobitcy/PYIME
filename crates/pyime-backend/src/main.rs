@@ -7,6 +7,8 @@ mod punct;
 mod protocol;
 mod register;
 mod session;
+#[cfg_attr(not(windows), allow(dead_code))] // 监护进程只在 Windows 运行;纯逻辑在 Linux 上单测
+mod supervise;
 mod tray;
 
 use std::collections::HashMap;
