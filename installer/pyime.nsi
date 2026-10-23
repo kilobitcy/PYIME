@@ -26,7 +26,7 @@ ShowInstDetails show
   Rename "$INSTDIR\${ARCH}\PIMETextService.dll" "$INSTDIR\${ARCH}\PIMETextService.dll.old-$9"
   Delete /REBOOTOK "$INSTDIR\${ARCH}\PIMETextService.dll.old-$9"
   SetOutPath "$INSTDIR\${ARCH}"
-  File "/oname=PIMETextService.dll" "..\target\pime\${ARCH}\PIMETextService.dll"
+  File "/oname=PIMETextService.dll" "..\target\tsf\${ARCH}\PIMETextService.dll"
 !macroend
 
 ; 卸载时还原官方原版 DLL
