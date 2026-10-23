@@ -1,3 +1,4 @@
+// PYIME 修改:ifstream 构造改传 c_str(),使 mingw 可编译。
 #include "PIMEImeModule.h"
 #include "resource.h"
 #include <iostream>
@@ -44,6 +45,7 @@ STDAPI DllUnregisterServer(void) {
 
 static inline Ime::LangProfileInfo langProfileFromJson(std::wstring file, std::string& guid) {
 	// load the json file to get the info of input method
+	// PYIME: mingw 的 ifstream 不接受 wstring 路径,改用 c_str()
 	std::ifstream fp(file.c_str(), std::ifstream::binary);
 	if(fp) {
 		Json::Value json;

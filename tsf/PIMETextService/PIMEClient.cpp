@@ -16,6 +16,7 @@
 //	Free Software Foundation, Inc., 51 Franklin St, Fifth Floor,
 //	Boston, MA  02110-1301, USA.
 //
+// PYIME 修改:tolower 加 :: 前缀、getPipeName 失败返回 wstring(),使 mingw 可编译。
 
 #include "PIMEClient.h"
 #include "libIME2/src/Utils.h"
@@ -43,6 +44,7 @@ static std::string uuidToString(const UUID& uuid) {
         result = utf16ToUtf8(buf);
         ::CoTaskMemFree(buf);
         // convert GUID to lwoer case
+        // PYIME: 显式用全局 ::tolower,避免 mingw 下重载歧义
         transform(result.begin(), result.end(), result.begin(), ::tolower);
     }
     return result;
@@ -788,6 +790,7 @@ wstring Client::getPipeName(const wchar_t* base_name) {
 	wstring pipeName = L"\\\\.\\pipe\\";
 	DWORD len = 0;
 	::GetUserNameW(NULL, &len); // get the required size of the buffer
+	// PYIME: 返回类型是 wstring,原 return false 在 mingw 下无法编译,下面两处 return 改为 wstring()
 	if (len <= 0)
 		return wstring();
 	// add username to the pipe path so it won't clash with the other users' pipes

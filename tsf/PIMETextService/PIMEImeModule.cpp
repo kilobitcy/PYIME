@@ -16,6 +16,7 @@
 //	Free Software Foundation, Inc., 51 Franklin St, Fifth Floor,
 //	Boston, MA  02110-1301, USA.
 //
+// PYIME 修改:ifstream 构造改传 c_str(),使 mingw 可编译。
 
 #include "PIMEImeModule.h"
 #include "PIMETextService.h"
@@ -49,6 +50,7 @@ ImeModule::ImeModule(HMODULE module):
 		programDir_ += L"\\PIME";
 
 		// load backend information
+		// PYIME: mingw 的 ifstream 不接受 wstring 路径,改用 c_str()
 		std::ifstream fp((programDir_ + L"\\backends.json").c_str(), std::ifstream::binary);
 		if (fp) {
 			Json::Value backendsInfo;
@@ -91,6 +93,7 @@ bool ImeModule::loadImeInfo(const std::string& guid, std::wstring& filePath, Jso
 						imejson += '\\';
 						imejson += findData.cFileName;
 						imejson += L"\\ime.json";
+						// PYIME: 同上,改用 c_str()
 						std::ifstream fp(imejson.c_str(), std::ifstream::binary);
 						if (fp) {
 							content.clear();

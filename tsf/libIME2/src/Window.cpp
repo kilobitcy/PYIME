@@ -16,6 +16,7 @@
 //    Free Software Foundation, Inc., 51 Franklin St, Fifth Floor,
 //    Boston, MA  02110-1301, USA.
 //
+// PYIME 修改:窗口类加 CS_DROPSHADOW,候选窗/消息窗带系统阴影。
 
 #include "Window.h"
 
@@ -79,6 +80,7 @@ bool Window::registerClass(HINSTANCE hinstance) {
 
     WNDCLASSEX wc;
     wc.cbSize         = sizeof(WNDCLASSEX);
+    // PYIME: 窗口类加 CS_DROPSHADOW(候选窗/消息窗系统阴影)
     wc.style          = CS_IME | CS_DROPSHADOW; // 候选窗/消息窗加系统阴影(Win11 下随 DWM 圆角)
     wc.lpfnWndProc    = (WNDPROC)Window::_wndProc;
     wc.cbClsExtra     = 0;

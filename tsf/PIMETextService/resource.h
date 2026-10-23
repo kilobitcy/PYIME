@@ -2,6 +2,7 @@
 // Microsoft Visual C++ generated include file.
 // Used by ChewingTextService.rc
 //
+// PYIME 修改:文件编码由 UTF-16 转为 UTF-8(windres/g++ 无法读取 UTF-16),内容未改。
 #define IDC_STATIC                      -1
 
 // Next default values for new objects

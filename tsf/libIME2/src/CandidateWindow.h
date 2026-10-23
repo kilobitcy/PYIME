@@ -16,6 +16,7 @@
 //    Free Software Foundation, Inc., 51 Franklin St, Fifth Floor,
 //    Boston, MA  02110-1301, USA.
 //
+// PYIME 修改:候选按自身文字宽度排版(textWidths_)、增加序号字体/留白/圆角成员,paintItem 签名改传候选矩形。
 
 #ifndef IME_CANDIDATE_WINDOW_H
 #define IME_CANDIDATE_WINDOW_H
@@ -68,6 +69,7 @@ public:
     void add(std::wstring item, wchar_t selKey) {
         items_.push_back(item);
         selKeys_.push_back(selKey);
+        // PYIME: 每个候选单独记录宽度
         textWidths_.push_back(0); // 与 items_ 保持等长,宽度在 recalculateSize() 中计算
     }
 
@@ -104,6 +106,7 @@ public:
 protected:
     LRESULT wndProc(UINT msg, WPARAM wp , LPARAM lp);
     void onPaint(WPARAM wp, LPARAM lp);
+    // PYIME: 参数由 (x, y) 改为候选矩形
     void paintItem(HDC hDC, int i, const RECT& itemRc);
     void itemRect(int i, RECT& rect);
 
@@ -114,6 +117,7 @@ private:
     BOOL shown_;
 
     int selKeyWidth_;
+    // PYIME: 取代统一的 textWidth_
     std::vector<int> textWidths_; // 每个候选按自身文字宽度排版,不再统一取最宽
     int itemHeight_;
     int candPerRow_;
@@ -124,6 +128,7 @@ private:
     int currentSel_;
     bool hasResult_;
     bool useCursor_;
+    // PYIME: 以下成员为新增,用于微信风格的候选外观
     HFONT selKeyFont_; // 序号用的小号字体
     int selKeyOffsetY_; // 序号相对候选的下移量,使两者基线对齐
     int itemPadX_; // 候选块内左右留白

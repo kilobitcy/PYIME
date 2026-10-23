@@ -16,6 +16,7 @@
 //    Free Software Foundation, Inc., 51 Franklin St, Fifth Floor,
 //    Boston, MA  02110-1301, USA.
 //
+// PYIME 修改:候选按自身宽度排版,序号小号灰字,选中项绿色圆角块,Win11 请 DWM 圆角。
 
 #include "CandidateWindow.h"
 #include "DrawUtils.h"
@@ -40,6 +41,7 @@ CandidateWindow::CandidateWindow(TextService* service, EditSession* session):
     currentSel_(0),
     hasResult_(false),
     useCursor_(true),
+    // PYIME: 新增外观成员的初始化(textWidth_ 已移除)
     selKeyFont_(NULL),
     selKeyOffsetY_(0),
     itemPadX_(0),
@@ -62,6 +64,7 @@ CandidateWindow::CandidateWindow(TextService* service, EditSession* session):
     HWND parent = service->compositionWindow(session);
     create(parent, WS_POPUP|WS_CLIPCHILDREN, WS_EX_TOOLWINDOW|WS_EX_TOPMOST);
 
+    // PYIME: 以下整段为新增(DWM 圆角)
     // Win11:请 DWM 给窗口圆角(弹出窗口默认不圆角,需显式请求,见微软文档 Apply rounded corners
     // 示例 4)。动态取 DwmSetWindowAttribute,旧系统不支持该属性时返回失败,改为自绘 1px 边框。
     if(HMODULE dwm = ::LoadLibraryW(L"dwmapi.dll")) {
@@ -75,6 +78,7 @@ CandidateWindow::CandidateWindow(TextService* service, EditSession* session):
     }
 }
 
+// PYIME: 析构释放序号字体
 CandidateWindow::~CandidateWindow(void) {
     if(selKeyFont_)
         ::DeleteObject(selKeyFont_);
@@ -204,6 +208,7 @@ LRESULT CandidateWindow::wndProc(UINT msg, WPARAM wp , LPARAM lp) {
     return 0;
 }
 
+// PYIME: 重写绘制:每候选按自身宽度绘制,选中项为圆角色块
 void CandidateWindow::onPaint(WPARAM wp, LPARAM lp) {
     // TODO: check isImmersive_, and draw the window differently
     // in Windows 8 app immersive mode to follow windows 8 UX guidelines
@@ -236,6 +241,7 @@ void CandidateWindow::onPaint(WPARAM wp, LPARAM lp) {
     EndPaint(hwnd_, &ps);
 }
 
+// PYIME: 重写尺寸计算:逐候选量宽度,创建序号小号字体,按字号换算间距
 void CandidateWindow::recalculateSize() {
     if(items_.empty()) {
         resize(margin_ * 2, margin_ * 2);
@@ -362,6 +368,7 @@ void CandidateWindow::setCurrentSel(int sel) {
 void CandidateWindow::clear() {
     items_.clear();
     selKeys_.clear();
+    // PYIME: 同步清空每候选宽度
     textWidths_.clear();
     currentSel_ = 0;
     hasResult_ = false;
@@ -373,6 +380,7 @@ void CandidateWindow::setUseCursor(bool use) {
         ::InvalidateRect(hwnd_, NULL, TRUE);
 }
 
+// PYIME: 重写:序号灰色小一号无点号,选中项绿底白字
 void CandidateWindow::paintItem(HDC hDC, int i, const RECT& itemRc) {
     bool selected = useCursor_ && i == currentSel_;
     if(selected) { // 选中:微信绿 #00B176 实心圆角块,序号与文字转白
