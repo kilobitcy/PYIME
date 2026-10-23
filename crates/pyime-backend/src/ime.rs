@@ -96,6 +96,19 @@ fn stamp(p: &Path) -> Option<(SystemTime, u64)> {
     Some((m.modified().ok()?, m.len()))
 }
 
+/// 先写同目录临时文件 `<名>.tmp` 再改名替换:写到一半进程被结束(看门狗、taskkill)时原文件不受损。
+/// 改名失败(如目标正被别的程序独占打开)时删掉临时文件,退回直接覆盖写。
+fn write_atomic(path: &Path, data: &[u8]) -> std::io::Result<()> {
+    let tmp = path.with_extension("tmp");
+    std::fs::write(&tmp, data)?;
+    if let Err(e) = std::fs::rename(&tmp, path) {
+        let _ = std::fs::remove_file(&tmp);
+        log::line(&format!("改名 {tmp:?} → {path:?} 失败,改为直接覆盖: {e}"));
+        return std::fs::write(path, data);
+    }
+    Ok(())
+}
+
 /// 测试用:本进程独占的临时 `user.txt` 路径(目录已建、文件不存在)。
 #[cfg(test)]
 pub fn temp_user_path(name: &str) -> PathBuf {
@@ -351,7 +364,7 @@ impl Ime {
         if let Some(dir) = path.parent() {
             let _ = std::fs::create_dir_all(dir);
         }
-        if let Err(e) = std::fs::write(path, en.export_raw()) {
+        if let Err(e) = write_atomic(path, en.export_raw().as_bytes()) {
             log::line(&format!("保存英文学习失败: {e}"));
         }
     }
@@ -367,7 +380,7 @@ impl Ime {
         if let Some(dir) = path.parent() {
             let _ = std::fs::create_dir_all(dir);
         }
-        match std::fs::write(path, engine.user().export()) {
+        match write_atomic(path, engine.user().export().as_bytes()) {
             Ok(()) => {
                 self.user_stamp.set(stamp(path));
                 self.skip_logged.set(false);

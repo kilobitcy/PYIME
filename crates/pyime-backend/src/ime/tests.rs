@@ -96,3 +96,19 @@ fn 打开数据目录前先建目录() {
     assert!(dir.is_dir());
     assert_eq!(ime.take_launched(), vec![format!("explorer.exe {}", dir.display())]);
 }
+
+#[test]
+fn 原子写替换已有文件且不留临时文件() {
+    let p = temp_user_path("atomic");
+    std::fs::write(&p, "旧内容").unwrap();
+    write_atomic(&p, "新内容".as_bytes()).unwrap();
+    assert_eq!(std::fs::read_to_string(&p).unwrap(), "新内容");
+    assert!(!p.with_extension("tmp").exists());
+}
+
+#[test]
+fn 原子写可新建文件() {
+    let p = temp_user_path("atomic-new");
+    write_atomic(&p, b"ni\t\xe4\xbd\xa0\t1").unwrap();
+    assert_eq!(std::fs::read_to_string(&p).unwrap(), "ni\t你\t1");
+}
