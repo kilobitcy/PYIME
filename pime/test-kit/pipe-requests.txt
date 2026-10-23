@@ -1,0 +1,8 @@
+{"method":"init","seqNum":1,"id":"pipecheck","isWindows8Above":true}
+{"method":"onActivate","seqNum":2}
+{"method":"filterKeyDown","seqNum":3,"keyCode":78,"charCode":110}
+{"method":"onKeyDown","seqNum":4,"keyCode":78,"charCode":110}
+{"method":"filterKeyDown","seqNum":5,"keyCode":73,"charCode":105}
+{"method":"onKeyDown","seqNum":6,"keyCode":73,"charCode":105}
+{"method":"filterKeyDown","seqNum":7,"keyCode":32,"charCode":32}
+{"method":"onKeyDown","seqNum":8,"keyCode":32,"charCode":32}

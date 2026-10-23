@@ -1,0 +1,36 @@
+﻿PYIME 0.0.0-pipecheck 实机验证清单(服务端管道模式)
+
+本包两件事:① 后端改名 pyime-server.exe 后,PIME 下照常打字(回归);② 手工启动新的管道服务端,用 pyime-pipe-cli 验收。
+每项记"通过 / 不通过 + 现象"。② 的日志在 %TEMP%\pyime-pipetest\PYIME\log.txt,不碰你平时的 user.txt。
+
+一、安装与回归(PIME 下照常使用)
+ 1. 双击 PYIME-0.0.0-pipecheck-setup.exe 覆盖安装。完成后 C:\Program Files (x86)\PIME\pyime\ 下有 pyime-server.exe,没有 server.exe。
+ 2. 记事本里用 PYIME 打几句话、选几个词:与 0.1.15 相同。
+ 3. 托盘右键菜单四项都能用;全程没有弹出黑色控制台窗口。
+
+二、管道服务端(在普通、非管理员的"命令提示符"里操作)
+ 4. 执行:
+      set LOCALAPPDATA=%TEMP%\pyime-pipetest
+      "C:\Program Files (x86)\PIME\pyime\pyime-server.exe" --supervise
+    命令立即返回。任务管理器"详细信息"页(右键列标题加"命令行"列):多出两个 pyime-server.exe,命令行分别以 --supervise、--worker 结尾。
+ 5. 再执行一次第 4 步的第二行:不会多出进程(单实例)。
+ 6. 把 dist\pipecheck 文件夹拷到本机,进入该文件夹执行:
+      pyime-pipe-cli < pipe-requests.txt
+    先显示"已连接 \\.\pipe\<你的用户名>\PYIME",随后 8 行回复,seqNum 依次为 1 到 8;seqNum 4 的 compositionString 为 "n",seqNum 6 为 "ni" 且 candidateList 里有"你",seqNum 8 带 commitString(首选词)。每行末尾括号里的耗时应在几十毫秒以内。
+ 7. 第 6 步后 %TEMP%\pyime-pipetest\PYIME\ 下有 user.txt,没有 user.tmp。
+ 8. 开两个命令提示符,各执行 pyime-pipe-cli(不带文件,手工逐行粘贴 pipe-requests.txt 的第 3、4 行,再在另一个窗口粘贴第 5、6 行):两边的 compositionString 互不影响(一边 "n",另一边 "i")。log.txt 里请求行前缀 [1]、[2] 不同。
+ 9. 在第 4 步的窗口执行:
+      "C:\Program Files (x86)\PIME\pyime\pyime-server.exe" --worker
+    立即返回;log.txt 末尾有"已被占用(已有 worker?),退出"。
+
+三、崩溃恢复与退出
+10. 任务管理器结束命令行以 --worker 结尾的那个进程:约 1 秒内出现新的 --worker 进程;再跑一次第 6 步,结果同前。
+11. 60 秒内连续结束 --worker 5 次:第 5 次后不再出现新 worker,--supervise 进程也退出;log.txt 有"worker 60s 内退出 5 次,停止重启"。
+12. 重新执行第 4 步,再执行:
+      "C:\Program Files (x86)\PIME\pyime\pyime-server.exe" --quit
+    3 秒内返回,两个进程都消失;log.txt 有"监护进程:收到退出通知"。
+13. 监护进程不在时再执行一次 --quit:立即返回。
+14. 重新执行第 4 步,然后在"以管理员身份运行"的命令提示符里执行 --quit(第 12 步的命令):两个进程同样消失。
+
+做完后执行第 12 步的 --quit 收尾;%TEMP%\pyime-pipetest 可删除。
+看门狗(单条请求超过 5 秒结束 worker)无法在实机上人为触发,不在本清单内。
