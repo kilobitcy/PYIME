@@ -59,6 +59,21 @@ Function .onInit
     Abort
   ${EndIf}
   SetRegView 64
+  ; 忽略 /D=:装到普通用户可写的目录时,Run 键与升级/卸载时提权执行的 --quit 都可被劫持
+  StrCpy $INSTDIR "$PROGRAMFILES64\PYIME"
+FunctionEnd
+
+; $R0 是否位于 Program Files(两种位数)下:是则 $R1 = "1"。只有那里普通用户写不了
+Function IsUnderProgramFiles
+  StrCpy $R1 "0"
+  StrLen $R3 "$PROGRAMFILES32\"
+  StrCpy $R4 $R0 $R3
+  StrCmp $R4 "$PROGRAMFILES32\" 0 +2 ; StrCmp 不区分大小写
+    StrCpy $R1 "1"
+  StrLen $R3 "$PROGRAMFILES64\"
+  StrCpy $R4 $R0 $R3
+  StrCmp $R4 "$PROGRAMFILES64\" 0 +2
+    StrCpy $R1 "1"
 FunctionEnd
 
 ; 旧版附加包(0.1.x,装在 PIME 目录下的 pyime\)由 32 位安装器写入 32 位注册表视图,
@@ -70,7 +85,14 @@ Function MigrateAddon
   SetRegView 32
   ReadRegStr $1 HKLM "${UNINST_KEY}" "PimeDir"
   SetRegView 64
+  StrCpy $R0 $1
+  Call IsUnderProgramFiles
   ${If} $1 != ""
+  ${AndIf} $R1 != "1"
+    ; 不在 Program Files 下的旧卸载程序可能被普通用户替换,不以管理员身份执行
+    DetailPrint "旧版附加包在 $1\pyime,不在 Program Files 下,跳过自动卸载"
+    MessageBox MB_ICONEXCLAMATION "检测到旧版 PYIME 附加包装在 $1\pyime。$\n出于安全考虑不自动卸载,请装完后在控制面板手动卸载它。" /SD IDOK
+  ${ElseIf} $1 != ""
   ${AndIf} ${FileExists} "$1\pyime\uninstall.exe"
     DetailPrint "发现旧版 PYIME 附加包:$1\pyime,先卸载"
     ExecWait '"$1\pyime\uninstall.exe" /S _?=$1\pyime' $0
@@ -104,24 +126,30 @@ Section "安装"
   ${EndIf}
   !insertmacro SwapFile "$INSTDIR\x64" "PYIME.dll" "..\target\tsf\x64\PYIME.dll"
   !insertmacro SwapFile "$INSTDIR\x86" "PYIME.dll" "..\target\tsf\x86\PYIME.dll"
-  ; 32 位安装器:Sysnative 指向真正的 64 位 System32,SysWOW64 是 32 位 regsvr32
-  ExecWait '"$WINDIR\Sysnative\regsvr32.exe" /s "$INSTDIR\x64\PYIME.dll"' $0
-  ExecWait '"$WINDIR\SysWOW64\regsvr32.exe" /s "$INSTDIR\x86\PYIME.dll"' $1
-  ${If} $0 <> 0
-  ${OrIf} $1 <> 0
-    MessageBox MB_ICONSTOP "注册输入法 DLL 失败(x64 返回 $0,x86 返回 $1)。" /SD IDOK
-    Abort
-  ${EndIf}
   SetRebootFlag false ; 挪开的旧文件留待下次重启删除即可,不提示重启
+  ; 先写卸载程序与登记,注册失败时也能从控制面板卸载干净
   WriteUninstaller "$INSTDIR\uninstall.exe"
   WriteRegStr HKLM "${UNINST_KEY}" "DisplayName" "PYIME ${VERSION}"
   WriteRegStr HKLM "${UNINST_KEY}" "UninstallString" '"$INSTDIR\uninstall.exe"'
   WriteRegStr HKLM "${UNINST_KEY}" "DisplayVersion" "${VERSION}"
   WriteRegStr HKLM "${UNINST_KEY}" "InstallLocation" "$INSTDIR"
+  ; 32 位安装器:Sysnative 指向真正的 64 位 System32,SysWOW64 是 32 位 regsvr32
+  ExecWait '"$WINDIR\Sysnative\regsvr32.exe" /s "$INSTDIR\x64\PYIME.dll"' $0
+  ExecWait '"$WINDIR\SysWOW64\regsvr32.exe" /s "$INSTDIR\x86\PYIME.dll"' $1
+  ${If} $0 <> 0
+  ${OrIf} $1 <> 0
+    MessageBox MB_ICONSTOP "注册输入法 DLL 失败(x64 返回 $0,x86 返回 $1)。$\n请在控制面板卸载 PYIME 后重新安装。" /SD IDOK
+    Abort
+  ${EndIf}
   WriteRegStr HKLM "${RUN_KEY}" "PYIME" '"$INSTDIR\pyime-server.exe" --supervise'
   ; 不能直接 Exec:安装器是提权的,服务端会以管理员身份运行(菜单开的记事本也跟着提权)
   ${StdUtils.ExecShellAsUser} $0 "$INSTDIR\pyime-server.exe" "open" "--supervise"
   DetailPrint "启动 pyime-server.exe --supervise:$0"
+  ; "fallback" 只出现在关了 UAC 的系统上(没有拆分令牌,登录后 Run 键启动的也是同一身份),照常使用
+  ${If} $0 != "ok"
+  ${AndIf} $0 != "fallback"
+    MessageBox MB_ICONEXCLAMATION "未能以普通用户身份启动 PYIME 服务($0)。$\n请注销再登录一次后使用。" /SD IDOK
+  ${EndIf}
   ${If} $Migrated == "1"
     MessageBox MB_ICONINFORMATION "已移除旧版 PYIME 附加包,并还原了 PIME 的原版 DLL。$\n如果你还在用 PIME 的其他输入法,需注销再登录一次才能恢复。" /SD IDOK
   ${EndIf}
