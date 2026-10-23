@@ -16,6 +16,7 @@
 //	Free Software Foundation, Inc., 51 Franklin St, Fifth Floor,
 //	Boston, MA  02110-1301, USA.
 //
+// PYIME 修改:去掉 backends.json/ime.json 扫描与设置工具。
 
 #ifndef NODE_IME_MODULE_H
 #define NODE_IME_MODULE_H
@@ -33,28 +34,6 @@ public:
 	virtual ~ImeModule(void);
 
 	virtual Ime::TextService* createTextService();
-
-	std::wstring& userDir () {
-		return userDir_;
-	}
-
-	std::wstring& programDir() {
-		return programDir_;
-	}
-
-	// called when config dialog needs to be launched
-	virtual bool onConfigure(HWND hwndParent, LANGID langid, REFGUID rguidProfile);
-
-	bool loadImeInfo(const std::string&, std::wstring& filePath, Json::Value& content);
-
-	const std::vector<std::wstring>& backendDirs() {
-		return backendDirs_;
-	}
-
-private:
-	std::wstring userDir_;
-	std::wstring programDir_;
-	std::vector<std::wstring> backendDirs_;
 };
 
 }

@@ -1,15 +1,6 @@
-// PYIME 修改:ifstream 构造改传 c_str(),使 mingw 可编译。
+// PYIME 修改:语言配置写死,不再扫描 PIME 的 backends.json/ime.json。
 #include "PIMEImeModule.h"
 #include "resource.h"
-#include <iostream>
-#include <fstream>
-#include <vector>
-#include <ShlObj.h>
-#include <Shlwapi.h> // for PathIsRelative
-#include <VersionHelpers.h>  // Provided by Windows SDK >= 8.1
-
-#include <json/json.h>
-#include "../libIME2/src/Utils.h"
 
 
 PIME::ImeModule* g_imeModule = NULL;
@@ -43,78 +34,22 @@ STDAPI DllUnregisterServer(void) {
 	return g_imeModule->unregisterServer();
 }
 
-static inline Ime::LangProfileInfo langProfileFromJson(std::wstring file, std::string& guid) {
-	// load the json file to get the info of input method
-	// PYIME: mingw 的 ifstream 不接受 wstring 路径,改用 c_str()
-	std::ifstream fp(file.c_str(), std::ifstream::binary);
-	if(fp) {
-		Json::Value json;
-		fp >> json;
-		auto name = utf8ToUtf16(json["name"].asCString());
-		guid = json["guid"].asCString();
-		auto guidStr = utf8ToUtf16(guid.c_str());
-		CLSID guid = {0};
-		CLSIDFromString (guidStr.c_str(), &guid);
-		// convert locale name to lanid
-		auto locale = utf8ToUtf16(json["locale"].asCString());
-		auto fallbackLocale = utf8ToUtf16(json["fallbackLocale"].asCString());
-		// ::MessageBox(0, name.c_str(), 0, 0);
-		auto iconFile = utf8ToUtf16(json["icon"].asCString());
-		if (!iconFile.empty() && PathIsRelative(iconFile.c_str())) {
-			int p = file.rfind('\\');
-			if (p != file.npos) {
-				iconFile = file.substr(0, p + 1) + iconFile;
-			}
-		}
-		// ::MessageBox(0, iconFile.c_str(), 0, 0);
-		Ime::LangProfileInfo langProfile = {
-			name,
-			guid,
-			locale,
-			fallbackLocale,
-			iconFile
-		};
-		return langProfile;
-	}
-	return Ime::LangProfileInfo();
-}
+// PYIME:语言配置 GUID {87977804-6ADE-4B62-8715-4B1C29435A52}
+// 用外部链接保证 GUID 字节落在数据段(static const 会被编译器折成立即数,产物检查查不到)
+extern const GUID g_profileGuid;
+const GUID g_profileGuid =
+{ 0x87977804, 0x6ade, 0x4b62, { 0x87, 0x15, 0x4b, 0x1c, 0x29, 0x43, 0x5a, 0x52 } };
 
 STDAPI DllRegisterServer(void) {
-	int iconIndex = 0; // use classic icon
-	if(::IsWindows8OrGreater()) {
-		iconIndex = 1; // use Windows 8 style IME icon
-    }
-	std::vector<Ime::LangProfileInfo> langProfiles;
-	std::wstring dirPath;
-	for (const auto backendDir: g_imeModule->backendDirs()) {
-		std::string backendName = utf16ToUtf8(backendDir.c_str());
-		dirPath = g_imeModule->programDir();
-		dirPath += L'\\';
-		dirPath += backendDir;
-		dirPath += L"\\input_methods";
-		// scan the dir for lang profile definition files
-		WIN32_FIND_DATA findData = { 0 };
-		HANDLE hFind = ::FindFirstFile((dirPath + L"\\*").c_str(), &findData);
-		if (hFind != INVALID_HANDLE_VALUE) {
-			do {
-				if (findData.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) { // this is a subdir
-					if (findData.cFileName[0] != '.') {
-						std::wstring imejson = dirPath;
-						imejson += '\\';
-						imejson += findData.cFileName;
-						imejson += L"\\ime.json";
-						// Make sure the file exists
-						DWORD fileAttrib = GetFileAttributesW(imejson.c_str());
-						if (fileAttrib != INVALID_FILE_ATTRIBUTES) {
-							// load the json file to get the info of input method
-							std::string guid;
-							langProfiles.push_back(std::move(langProfileFromJson(imejson, guid)));
-						}
-					}
-				}
-			} while (::FindNextFile(hFind, &findData));
-			::FindClose(hFind);
-		}
-	}
-	return g_imeModule->registerServer(L"PIMETextService", langProfiles.data(), langProfiles.size());
+	// 名称、locale 与原 installer/input_methods/pyime/ime.json 一致;不带图标(原 icon 为空)
+	Ime::LangProfileInfo langProfile = {
+		L"PYIME 拼音",
+		g_profileGuid,
+		L"zh-Hans-CN",
+		L"zh-CN",
+		L"",
+		0
+	};
+	wchar_t imeName[] = L"PYIME";
+	return g_imeModule->registerServer(imeName, &langProfile, 1);
 }

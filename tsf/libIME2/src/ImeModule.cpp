@@ -16,6 +16,7 @@
 //    Free Software Foundation, Inc., 51 Franklin St, Fifth Floor,
 //    Boston, MA  02110-1301, USA.
 //
+// PYIME 修改:显示属性 GUID 换新,避免与官方 PIME 并存时冲突。
 
 #include "ImeModule.h"
 #include <string>
@@ -49,9 +50,10 @@ static const GUID GUID_TFCAT_TIPCAP_SYSTRAYSUPPORT =
 
 // display attribute GUIDs
 
-// {05814A20-00B3-4B73-A3D0-2C521EFA8BE5}
+// PYIME:换新,原 {05814A20-00B3-4B73-A3D0-2C521EFA8BE5} 与官方 PIME 相同
+// {F90B2442-FAAA-4455-A719-8ADC19CA3D39}
 static const GUID g_inputDisplayAttributeGuid = 
-{ 0x5814a20, 0xb3, 0x4b73, { 0xa3, 0xd0, 0x2c, 0x52, 0x1e, 0xfa, 0x8b, 0xe5 } };
+{ 0xf90b2442, 0xfaaa, 0x4455, { 0xa7, 0x19, 0x8a, 0xdc, 0x19, 0xca, 0x3d, 0x39 } };
 
 
 // {E1270AA5-A6B1-4112-9AC7-F5E476C3BD63}

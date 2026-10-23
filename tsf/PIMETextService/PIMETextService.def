@@ -1,4 +1,4 @@
-LIBRARY PIMETextService.dll
+LIBRARY PYIME.dll
 
 EXPORTS
     DllGetClassObject               PRIVATE

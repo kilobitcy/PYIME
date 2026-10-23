@@ -6,7 +6,7 @@ cd "$(dirname "$0")/.."
 ROOT=$PWD
 SRC=$ROOT/tsf
 OUTDIR=$ROOT/target/tsf
-DLL=PIMETextService.dll
+DLL=PYIME.dll
 PIME_SRCS="DllEntry PIMEClient PIMEImeModule PIMELangBarButton PIMETextService TsfLog"
 
 # 头文件大小写垫片(源码按 Windows 大小写不敏感写 include)
