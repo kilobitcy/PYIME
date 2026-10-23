@@ -95,8 +95,8 @@ Windows 11 拼音输入法。目标:界面与功能像微信输入法一样简�
 - 重新加载会去 BOM、CRLF→LF;非 UTF-8 时不读入、继续保护。"编辑用户词库…"先写盘、备份 `user.txt.bak`,再开记事本。
 - 启动时的导入仍不处理 BOM(首行失效)与 CRLF(`\r` 致计数解析失败、整行跳过);重新加载一次即被规整。
 
-### 待办(截至 2026-10-22)
-- 实机验证 `installer/PYIME-0.0.0-menucheck-setup.exe`(清单 `pime/test-kit/menucheck.txt`,含符号候选原待验项);通过后发 0.1.15,须先问用户。
+### 待办(截至 2026-10-23)
+- 托盘菜单与符号候选已按 `pime/test-kit/menucheck.txt` 实机验证通过(2026-10-23),随 0.1.15 发布。
 - `scripts/windows/user-reload.ps1` 未在 Windows 实机运行过(本机无 pwsh,未做语法检查)。
 - 符号候选终审未修 Minor:"英文候选不挂符号"无单测;英文候选会被带符号的宿主挤后 1–2 位;`symbols.txt` 非 UTF-8 时整表跳过。
 
