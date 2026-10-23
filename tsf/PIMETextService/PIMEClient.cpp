@@ -43,6 +43,8 @@ namespace PIME {
 // PYIME:连接与请求超时(毫秒)。超时即断线、放行当前键,不冻宿主 UI 线程。
 static const DWORD kConnectTimeoutMs = 200;
 static const DWORD kRpcTimeoutMs = 2000;
+// PYIME:单条回复上限,与服务端单条消息上限 1 MiB 一致
+static const size_t kMaxReplyBytes = 1u << 20;
 
 // PYIME:退避状态按进程共享(同一进程可有多个 Client,分属不同 UI 线程)。
 // mingw 线程模型为 win32,没有 std::mutex,用 SRWLOCK。
@@ -725,6 +727,11 @@ bool Client::callRpcPipe(const std::string& serializedRequest, std::string& seri
         if (!finishIo(started, remaining(), transferred, lastIoError_))
             return false;
         serializedReply.append(readBuf_, transferred);
+        // PYIME:回复累计超过 1 MiB(与服务端单条上限一致)按失败处理,防冒名管道让宿主分配大量内存
+        if (serializedReply.size() > kMaxReplyBytes) {
+            lastIoError_ = ERROR_MESSAGE_EXCEEDS_MAX_SIZE;
+            return false;
+        }
         if (lastIoError_ != ERROR_MORE_DATA)
             return true;
     }
@@ -783,7 +790,24 @@ void Client::abandonComposition() {
             textService_->setCompositionString(rpcSession_, L"", 0);
             textService_->endComposition(rpcSession_->context());
         } else if (auto context = textService_->currentContext()) {
-            textService_->endComposition(context);  // 无会话时只能结束,文字可能残留(实机验证项)
+            // PYIME:无会话(如 filterKeyDown 路径)时自行请求编辑会话,在会话内置空再结束,避免拼音残留。
+            // OnTestKeyDown 内同步读写请求可能被拒,用 TF_ES_ASYNCDONTCARE:能同步则同步,否则排队。
+            // lambda 持有 TextService 的 ComPtr(AddRef),不捕获裸 this;排队执行时先确认仍在组字。
+            Ime::ComPtr<TextService> ts(textService_);
+            auto session = Ime::ComPtr<Ime::EditSession>::make(
+                context,
+                [ts](Ime::EditSession* es, TfEditCookie) {
+                    if (ts->isComposing()) {
+                        ts->setCompositionString(es, L"", 0);
+                        ts->endComposition(es->context());
+                    }
+                }
+            );
+            HRESULT hrSession = S_OK;
+            HRESULT hr = context->RequestEditSession(textService_->clientId(), session,
+                TF_ES_ASYNCDONTCARE | TF_ES_READWRITE, &hrSession);
+            if (FAILED(hr) || FAILED(hrSession))
+                tsfLog("断线清理:RequestEditSession 失败(hr=0x%08lx,session=0x%08lx)", (unsigned long)hr, (unsigned long)hrSession);
         }
     }
     if (textService_->showingCandidates())
