@@ -1,5 +1,7 @@
 // GUI 子系统:由监护进程/Run 键/PIMELauncher 启动时不弹控制台窗;stdin/stdout 由启动方经 STARTUPINFO 传入,照常可用。
 #![cfg_attr(windows, windows_subsystem = "windows")]
+#[cfg_attr(not(windows), allow(dead_code))] // 只被 Windows 的 pipe.rs 使用;纯逻辑在 Linux 上单测
+mod hub;
 mod ime;
 mod inputlog;
 mod log;
