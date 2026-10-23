@@ -32,6 +32,74 @@ impl RestartPolicy {
     }
 }
 
+#[cfg(windows)]
+pub fn run() {
+    use crate::win::sys::*;
+    use crate::{log, win};
+    use std::os::windows::io::AsRawHandle;
+
+    log::init();
+    log::install_panic_hook();
+    let Some(sec) = user_sid().and_then(|sid| Security::from_sddl(&win::object_sddl(&sid))) else {
+        return log::line("监护进程:安全描述符无效,退出");
+    };
+    // SAFETY: 名字以 NUL 结尾(临时 Vec 活到语句结束);sec 在调用期间有效。
+    let mutex = unsafe { CreateMutexW(&sec.attrs, 1, wide(MUTEX_NAME).as_ptr()) };
+    if mutex == 0 || last_error() == ERROR_ALREADY_EXISTS {
+        return; // 已有监护进程
+    }
+    // SAFETY: 同上;手动复位、初始未置位。
+    let quit = unsafe { CreateEventW(&sec.attrs, 1, 0, wide(QUIT_EVENT).as_ptr()) };
+    if quit == 0 {
+        return log::line(&format!("监护进程:建退出事件失败: 错误码 {}", last_error()));
+    }
+    let Ok(exe) = std::env::current_exe() else { return log::line("监护进程:取不到自身路径,退出") };
+    log::line(&format!("监护进程启动 pyime-server {}", env!("CARGO_PKG_VERSION")));
+    let mut policy = RestartPolicy::new(RESTART_WINDOW, RESTART_MAX);
+    loop {
+        let mut child = match std::process::Command::new(&exe).arg("--worker").spawn() {
+            Ok(c) => c,
+            Err(e) => return log::line(&format!("监护进程:启动 worker 失败,退出: {e}")),
+        };
+        let handles = [child.as_raw_handle() as Handle, quit];
+        // SAFETY: 两个句柄在等待期间都有效(child 未被 drop,quit 未关闭)。
+        let r = unsafe { WaitForMultipleObjects(2, handles.as_ptr(), 0, INFINITE) };
+        if r != WAIT_OBJECT_0 {
+            log::line(if r == WAIT_OBJECT_0 + 1 { "监护进程:收到退出通知" } else { "监护进程:等待失败,退出" });
+            let _ = child.kill();
+            let _ = child.wait();
+            return;
+        }
+        log::line(&format!("worker 退出: {:?}", child.wait()));
+        if !policy.on_exit(Instant::now()) {
+            return log::line("worker 60s 内退出 5 次,停止重启");
+        }
+        std::thread::sleep(Duration::from_millis(500));
+    }
+}
+
+/// `--quit`:通知监护进程连同 worker 退出,最多等 3s;监护进程不在时立即返回。
+#[cfg(windows)]
+pub fn quit() {
+    use crate::win::sys::*;
+    const EVENT_MODIFY_STATE: u32 = 0x0002;
+    const SYNCHRONIZE: u32 = 0x0010_0000;
+    // SAFETY: 名字以 NUL 结尾;打开的句柄在本函数末尾关闭。
+    unsafe {
+        let event = OpenEventW(EVENT_MODIFY_STATE, 0, wide(QUIT_EVENT).as_ptr());
+        if event == 0 {
+            return;
+        }
+        let mutex = OpenMutexW(SYNCHRONIZE, 0, wide(MUTEX_NAME).as_ptr());
+        SetEvent(event);
+        if mutex != 0 {
+            WaitForSingleObject(mutex, 3000);
+            CloseHandle(mutex);
+        }
+        CloseHandle(event);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -65,7 +65,7 @@ fn start_logs(args: &[String]) {
     ));
 }
 
-/// Windows 专有模式:`--worker` 管道服务(`--supervise`/`--quit` 见 supervise.rs)。处理了返回 true。
+/// Windows 专有模式:`--worker` 管道服务、`--supervise` 监护进程、`--quit` 通知退出。处理了返回 true。
 #[cfg(windows)]
 fn run_windows_mode(args: &[String]) -> bool {
     match args.get(1).map(String::as_str) {
@@ -73,6 +73,8 @@ fn run_windows_mode(args: &[String]) -> bool {
             start_logs(args);
             pipe::run();
         }
+        Some("--supervise") => supervise::run(),
+        Some("--quit") => supervise::quit(),
         _ => return false,
     }
     true
