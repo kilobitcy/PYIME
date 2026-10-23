@@ -4,7 +4,7 @@ version = "0.1.15"
 edition = "2021"
 license = "GPL-3.0-only"
 
-# 主程序产物名 pyime-server.exe(安装包与 backends.json 用这个名字);src/bin/ 下的工具照常自动发现
+# 主程序产物名 pyime-server.exe(安装包与 Run 键用这个名字);src/bin/ 下的工具照常自动发现
 [[bin]]
 name = "pyime-server"
 path = "src/main.rs"
