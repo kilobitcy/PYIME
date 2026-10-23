@@ -5,6 +5,8 @@ mod hub;
 mod ime;
 mod inputlog;
 mod log;
+#[cfg(windows)]
+mod pipe;
 mod punct;
 mod protocol;
 mod register;
@@ -50,6 +52,37 @@ fn disinherit_std_handles() {
     }
 }
 
+/// 打开日志、输入日志与 panic 钩子,记启动信息。
+fn start_logs(args: &[String]) {
+    log::init();
+    inputlog::init();
+    log::install_panic_hook();
+    log::line(&format!(
+        "启动 pyime-server {} args={:?} exe={:?}",
+        env!("CARGO_PKG_VERSION"),
+        args,
+        std::env::current_exe().ok()
+    ));
+}
+
+/// Windows 专有模式:`--worker` 管道服务(`--supervise`/`--quit` 见 supervise.rs)。处理了返回 true。
+#[cfg(windows)]
+fn run_windows_mode(args: &[String]) -> bool {
+    match args.get(1).map(String::as_str) {
+        Some("--worker") => {
+            start_logs(args);
+            pipe::run();
+        }
+        _ => return false,
+    }
+    true
+}
+
+#[cfg(not(windows))]
+fn run_windows_mode(_: &[String]) -> bool {
+    false
+}
+
 fn main() {
     let args: Vec<String> = std::env::args().collect();
     if let [_, flag, dir] = args.as_slice() {
@@ -64,21 +97,17 @@ fn main() {
         }
         return;
     }
+    if run_windows_mode(&args) {
+        return;
+    }
+    // 无参数:旧 PIME 后端模式,经 PIMELauncher 的 stdin/stdout 行协议通信(实施第 6 步删除)
     let stdin = io::stdin();
     let mut stdout = io::stdout().lock();
     let mut sessions: HashMap<String, session::Session> = HashMap::new();
-    log::init();
-    inputlog::init();
-    log::install_panic_hook();
+    start_logs(&args);
     #[cfg(windows)]
     disinherit_std_handles();
     let ime = ime::Ime::load();
-    log::line(&format!(
-        "启动 pyime-server {} args={:?} exe={:?}",
-        env!("CARGO_PKG_VERSION"),
-        args,
-        std::env::current_exe().ok()
-    ));
 
     for line in stdin.lock().lines() {
         let line = match line {
