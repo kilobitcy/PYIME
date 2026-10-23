@@ -16,6 +16,7 @@
 //	Free Software Foundation, Inc., 51 Franklin St, Fifth Floor,
 //	Boston, MA  02110-1301, USA.
 //
+// PYIME 修改:改连 PYIME 自有服务端管道;重叠 I/O 超时、退避、断线清理。
 
 #ifndef _PIME_CLIENT_H_
 #define _PIME_CLIENT_H_
@@ -75,16 +76,21 @@ public:
 	void onCompositionTerminated(bool forced);
 
 private:
-    static std::wstring getPipeName(const wchar_t* base_name);
+    static std::wstring getPipeName();
     HANDLE connectPipe(const wchar_t* pipeName, int timeoutMs);
 
     Json::Value createRpcRequest(const char* methodName);
 	bool callRpcMethod(Json::Value& request, Json::Value& response);
 
-    bool isPipeCreatedByPIMEServer(HANDLE pipe);
     bool waitForRpcConnection();
-    bool callRpcPipe(HANDLE pipe, const std::string& serializedRequest, std::string& serializedReply);
+    // PYIME:重叠 I/O 收发一条消息,总耗时不超过 timeoutMs
+    bool callRpcPipe(const std::string& serializedRequest, std::string& serializedReply, DWORD timeoutMs);
+    OVERLAPPED* startIo();
+    bool finishIo(BOOL started, DWORD timeoutMs, DWORD& transferred, DWORD& error);
     void closeRpcConnection();
+    // PYIME:请求失败即断线:关管道、进入退避、结束组字并藏窗
+    void onRpcFailure(const char* method, const char* what);
+    void abandonComposition();
 
 	bool init();
     void resetTextServiceState();
@@ -110,6 +116,17 @@ private:
 	TextService* textService_;
 	std::string guid_;
 	HANDLE pipe_;
+    HANDLE ioEvent_;        // PYIME:重叠 I/O 完成事件(手动复位)
+    OVERLAPPED overlapped_; // PYIME:同一时刻至多一个挂起 I/O
+    char readBuf_[4096];    // PYIME:收包缓冲区为成员,取消完成前内核可能仍在写入,不能用栈变量
+    DWORD lastIoError_;     // PYIME:最近一次 I/O 错误码,超时为 WAIT_TIMEOUT
+    bool abandoning_;       // PYIME:防止 abandonComposition 重入
+    Ime::EditSession* rpcSession_ = nullptr;  // PYIME:当前 RPC 所在的编辑会话,断线清理用
+    struct RpcSessionScope {
+        Client& c; Ime::EditSession* prev;
+        RpcSessionScope(Client& c, Ime::EditSession* s) : c(c), prev(c.rpcSession_) { c.rpcSession_ = s; }
+        ~RpcSessionScope() { c.rpcSession_ = prev; }
+    };
 	std::unordered_map<std::string, Ime::ComPtr<PIME::LangBarButton>> buttons_; // map buttons to string IDs
 	unsigned int nextSeqNum_;
 	bool isActivated_;

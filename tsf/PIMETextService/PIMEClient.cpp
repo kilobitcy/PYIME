@@ -17,6 +17,7 @@
 //	Boston, MA  02110-1301, USA.
 //
 // PYIME 修改:tolower 加 :: 前缀、getPipeName 失败返回 wstring(),使 mingw 可编译。
+// PYIME 修改:改连 PYIME 自有服务端管道;重叠 I/O 超时、退避、断线清理。
 
 #include "PIMEClient.h"
 #include "libIME2/src/Utils.h"
@@ -32,10 +33,41 @@
 #include <algorithm>
 #include <Winnls.h>  // for IS_HIGH_SURROGATE() macro for checking UTF16 surrogate pairs
 #include <VersionHelpers.h>  // Provided by Windows SDK >= 8.1
+#include "Backoff.h"
+#include "TsfLog.h"
 
 using namespace std;
 
 namespace PIME {
+
+// PYIME:连接与请求超时(毫秒)。超时即断线、放行当前键,不冻宿主 UI 线程。
+static const DWORD kConnectTimeoutMs = 200;
+static const DWORD kRpcTimeoutMs = 2000;
+
+// PYIME:退避状态按进程共享(同一进程可有多个 Client,分属不同 UI 线程)。
+// mingw 线程模型为 win32,没有 std::mutex,用 SRWLOCK。
+static Backoff g_backoff;
+static SRWLOCK g_backoffLock = SRWLOCK_INIT;
+
+static bool backoffBlocked() {
+    ::AcquireSRWLockShared(&g_backoffLock);
+    bool blocked = g_backoff.blocked(::GetTickCount64());
+    ::ReleaseSRWLockShared(&g_backoffLock);
+    return blocked;
+}
+
+static DWORD backoffFail() {
+    ::AcquireSRWLockExclusive(&g_backoffLock);
+    DWORD delay = g_backoff.fail(::GetTickCount64());
+    ::ReleaseSRWLockExclusive(&g_backoffLock);
+    return delay;
+}
+
+static void backoffSucceed() {
+    ::AcquireSRWLockExclusive(&g_backoffLock);
+    g_backoff.succeed();
+    ::ReleaseSRWLockExclusive(&g_backoffLock);
+}
 
 static std::string uuidToString(const UUID& uuid) {
     std::string result;
@@ -59,6 +91,10 @@ bool uuidFromString(const char* uuidStr, UUID& result) {
 Client::Client(TextService* service, REFIID langProfileGuid):
 	textService_(service),
 	pipe_(INVALID_HANDLE_VALUE),
+	ioEvent_(::CreateEventW(nullptr, TRUE, FALSE, nullptr)),
+	overlapped_(),
+	lastIoError_(0),
+	abandoning_(false),
 	nextSeqNum_(0),
 	isActivated_(false),
     guid_{uuidToString(langProfileGuid)},
@@ -68,6 +104,8 @@ Client::Client(TextService* service, REFIID langProfileGuid):
 Client::~Client(void) {
 	closeRpcConnection();
     resetTextServiceState();
+	if (ioEvent_)
+		::CloseHandle(ioEvent_);
 	LangBarButton::clearIconCache();
 }
 
@@ -419,6 +457,7 @@ bool Client::filterKeyDown(Ime::KeyEvent& keyEvent) {
 }
 
 bool Client::onKeyDown(Ime::KeyEvent& keyEvent, Ime::EditSession* session) {
+    RpcSessionScope scope(*this, session);  // PYIME:断线清理时可在此会话中清空组字串
     Json::Value req = createRpcRequest("onKeyDown");
 	addKeyEventToRpcRequest(req, keyEvent);
 
@@ -443,6 +482,7 @@ bool Client::filterKeyUp(Ime::KeyEvent& keyEvent) {
 }
 
 bool Client::onKeyUp(Ime::KeyEvent& keyEvent, Ime::EditSession* session) {
+    RpcSessionScope scope(*this, session);  // PYIME:断线清理时可在此会话中清空组字串
     Json::Value req = createRpcRequest("onKeyUp");
 	addKeyEventToRpcRequest(req, keyEvent);
 
@@ -634,37 +674,70 @@ Json::Value Client::createRpcRequest(const char* methodName) {
     return request;
 }
 
-bool Client::callRpcPipe(HANDLE pipe, const std::string& serializedRequest, std::string& serializedReply) {
-	char buf[1024];
-	DWORD rlen = 0;
-    bool hasMoreData = false;
-    if (!TransactNamedPipe(pipe, (void*)serializedRequest.data(), serializedRequest.size(), buf, sizeof(buf), &rlen, NULL)) {
-        if (GetLastError() == ERROR_MORE_DATA) {
-            hasMoreData = true;
-        }
-        else {  // unknown error
-            return false;
-        }
-    }
-    serializedReply.append(buf, rlen);
+// PYIME:复位事件与 OVERLAPPED,供下一次 WriteFile/ReadFile 使用
+OVERLAPPED* Client::startIo() {
+    ::ResetEvent(ioEvent_);
+    overlapped_ = OVERLAPPED();
+    overlapped_.hEvent = ioEvent_;
+    return &overlapped_;
+}
 
-    while (hasMoreData) {
-        if (ReadFile(pipe, buf, sizeof(buf), &rlen, NULL)) {
-            hasMoreData = false;
-        }
-        else if (::GetLastError() != ERROR_MORE_DATA) {  // unknown error
-            return false;
-        }
-        serializedReply.append(buf, rlen);
+// PYIME:等待 startIo() 发起的操作;started 为 WriteFile/ReadFile 的返回值。
+// 成功返回 true(error 为 ERROR_SUCCESS,或 ERROR_MORE_DATA 表示消息还没读完);
+// 超时则 CancelIoEx,并用 GetOverlappedResult(bWait=TRUE) 等取消真正完成后才返回 false(error = WAIT_TIMEOUT),
+// 此后 readBuf_/overlapped_ 才可复用——否则内核可能迟到写入,破坏宿主进程内存。
+bool Client::finishIo(BOOL started, DWORD timeoutMs, DWORD& transferred, DWORD& error) {
+    transferred = 0;
+    error = started ? ERROR_SUCCESS : ::GetLastError();
+    if (!started && error != ERROR_IO_PENDING && error != ERROR_MORE_DATA)
+        return false;  // 没有挂起的 I/O
+    if (error == ERROR_IO_PENDING && ::WaitForSingleObject(ioEvent_, timeoutMs) != WAIT_OBJECT_0) {
+        ::CancelIoEx(pipe_, &overlapped_);
+        ::GetOverlappedResult(pipe_, &overlapped_, &transferred, TRUE);
+        error = WAIT_TIMEOUT;
+        return false;
     }
-	return true;
+    if (::GetOverlappedResult(pipe_, &overlapped_, &transferred, FALSE)) {
+        error = ERROR_SUCCESS;
+        return true;
+    }
+    error = ::GetLastError();
+    return error == ERROR_MORE_DATA;
+}
+
+// PYIME:写一条请求消息、读完整条回复消息,总耗时不超过 timeoutMs。失败时 lastIoError_ 记错误码。
+bool Client::callRpcPipe(const std::string& serializedRequest, std::string& serializedReply, DWORD timeoutMs) {
+    if (pipe_ == INVALID_HANDLE_VALUE || !ioEvent_) {
+        lastIoError_ = ERROR_INVALID_HANDLE;
+        return false;
+    }
+    const ULONGLONG deadline = ::GetTickCount64() + timeoutMs;
+    auto remaining = [deadline]() -> DWORD {
+        ULONGLONG now = ::GetTickCount64();
+        return now >= deadline ? 0 : DWORD(deadline - now);
+    };
+    DWORD transferred = 0;
+    BOOL started = ::WriteFile(pipe_, serializedRequest.data(), DWORD(serializedRequest.size()), nullptr, startIo());
+    if (!finishIo(started, remaining(), transferred, lastIoError_))
+        return false;
+    for (;;) {
+        started = ::ReadFile(pipe_, readBuf_, sizeof(readBuf_), nullptr, startIo());
+        if (!finishIo(started, remaining(), transferred, lastIoError_))
+            return false;
+        serializedReply.append(readBuf_, transferred);
+        if (lastIoError_ != ERROR_MORE_DATA)
+            return true;
+    }
 }
 
 // send the request to the server
 // a sequence number will be added to the req object automatically.
 bool Client::callRpcMethod(Json::Value& request, Json::Value & response) {
     if (shouldWaitConnection_ && !waitForRpcConnection()) {
-        return false;
+        return false;  // PYIME:退避期内或连不上,调用方放行当前键
+    }
+    if (pipe_ == INVALID_HANDLE_VALUE) {
+        return false;  // PYIME:init 握手途中已断线;不再触发 onRpcFailure,避免与 abandonComposition 循环
     }
 
     // Add a sequence number for the request.
@@ -673,52 +746,66 @@ bool Client::callRpcMethod(Json::Value& request, Json::Value & response) {
 
 	Json::FastWriter writer;
 	std::string serializedRequest = writer.write(request); // convert the json object to string
+    std::string method = request["method"].asString();
 
     std::string serializedResponse;
-    bool success = false;
-    if (callRpcPipe(pipe_, serializedRequest, serializedResponse)) {
-		Json::Reader reader;
-		success = reader.parse(serializedResponse, response);
-		if (success) {
-			if (response["seqNum"].asUInt() != seqNum) // sequence number mismatch
-				success = false;
-		}
-	}
-    else {
-        success = false;
+    if (!callRpcPipe(serializedRequest, serializedResponse, kRpcTimeoutMs)) {
+        onRpcFailure(method.c_str(), lastIoError_ == WAIT_TIMEOUT ? "超时" : "读写失败");
+        return false;
     }
-
-	if(!success) { // fail to send the request to the server
-		closeRpcConnection(); // close the pipe connection since it's broken
-        resetTextServiceState();  // since we lost the connection, the state is unknonw so we reset.
+	Json::Reader reader;
+	if (!reader.parse(serializedResponse, response) || response["seqNum"].asUInt() != seqNum) {
+        onRpcFailure(method.c_str(), "回复无法解析或 seqNum 不符");
+        return false;
 	}
-	return success;
+    backoffSucceed();
+	return true;
 }
 
-bool Client::isPipeCreatedByPIMEServer(HANDLE pipe) {
-    // security check: make sure that we're connecting to the correct server
-    ULONG serverPid;
-    if (GetNamedPipeServerProcessId(pipe, &serverPid)) {
-        // FIXME: check the command line of the server?
-        // See this: http://www.codeproject.com/Articles/19685/Get-Process-Info-with-NtQueryInformationProcess
-        // Too bad! Undocumented Windows internal API might be needed here. :-(
+// PYIME:请求失败(超时/读写失败/回复异常)= 断线。顺序要紧:先关管道并进入退避,再结束组字——
+// endComposition 会回调 onCompositionTerminated → callRpcMethod,此时退避生效,它会立即返回而不再连。
+void Client::onRpcFailure(const char* method, const char* what) {
+    closeRpcConnection();
+    DWORD delay = backoffFail();
+    tsfLog("%s 请求失败(%s,err=%lu),断开;%lu ms 内不重连", method, what, (unsigned long)lastIoError_, (unsigned long)delay);
+    resetTextServiceState();  // since we lost the connection, the state is unknonw so we reset.
+    abandonComposition();
+}
+
+// PYIME:断线时清理界面(同 TextService::onKeyboardStatusChanged 关闭键盘时的做法):
+// 结束组字、藏候选窗与消息窗,避免随后放行的按键插到残留的组字串旁。
+void Client::abandonComposition() {
+    if (abandoning_)
+        return;
+    abandoning_ = true;
+    if (textService_->isComposing()) {
+        if (rpcSession_) {  // 在按键的编辑会话里:同 updateComposition 置空再结束(PIMEClient.cpp:182-183 的做法)
+            textService_->setCompositionString(rpcSession_, L"", 0);
+            textService_->endComposition(rpcSession_->context());
+        } else if (auto context = textService_->currentContext()) {
+            textService_->endComposition(context);  // 无会话时只能结束,文字可能残留(实机验证项)
+        }
     }
-    return true;
+    if (textService_->showingCandidates())
+        textService_->hideCandidates();
+    textService_->hideMessage();
+    abandoning_ = false;
 }
 
 // establish a connection to the specified pipe and returns its handle
-// static
+// PYIME:重叠模式打开,收发可超时;不做对端校验。
 HANDLE Client::connectPipe(const wchar_t* pipeName, int timeoutMs) {
     HANDLE pipe = INVALID_HANDLE_VALUE;
     if (WaitNamedPipe(pipeName, timeoutMs)) {
-        pipe = CreateFile(pipeName, GENERIC_READ | GENERIC_WRITE, 0, NULL, OPEN_EXISTING, 0, NULL);
+        // PYIME:不要 GENERIC_WRITE(含 FILE_APPEND_DATA = 建管道实例权限),服务端 SDDL 不授 AC 此权限,
+        // 否则 AppContainer 宿主打不开;FILE_WRITE_ATTRIBUTES 供下面 SetNamedPipeHandleState。
+        pipe = CreateFile(pipeName, GENERIC_READ | FILE_WRITE_DATA | FILE_WRITE_ATTRIBUTES, 0, NULL, OPEN_EXISTING, FILE_FLAG_OVERLAPPED, NULL);
     }
 
     if (pipe != INVALID_HANDLE_VALUE) {
         DWORD mode = PIPE_READMODE_MESSAGE;
         // The pipe is connected; change to message-read mode.
-        if (!isPipeCreatedByPIMEServer(pipe) || !::SetNamedPipeHandleState(pipe, &mode, NULL, NULL)) {
-            DisconnectNamedPipe(pipe);
+        if (!::SetNamedPipeHandleState(pipe, &mode, NULL, NULL)) {
             CloseHandle(pipe);
             pipe = INVALID_HANDLE_VALUE;
         }
@@ -727,37 +814,40 @@ HANDLE Client::connectPipe(const wchar_t* pipeName, int timeoutMs) {
 }
 
 
-// Ensure that we're connected to the PIME input method server
-// If we are already connected, the method simply returns true;
-// otherwise, it tries to establish the connection.
+// Ensure that we're connected to the PYIME server.
+// PYIME:只连一次、最多等 kConnectTimeoutMs;失败进入退避,退避期内直接返回 false(按键放行)。
 bool Client::waitForRpcConnection() {
     if (pipe_ != INVALID_HANDLE_VALUE) {
         return true;
     }
-
-	wstring serverPipeName = getPipeName(L"Launcher");
-    for (int attempt = 0; pipe_ == INVALID_HANDLE_VALUE && attempt < 5; ++attempt) {
-		// try to connect to the server
-		pipe_ = connectPipe(serverPipeName.c_str(), 30000);
-	}
-
-    if (pipe_ != INVALID_HANDLE_VALUE) {
-        // send initialization info to the server for hand-shake.
-        shouldWaitConnection_ = false;  // prevent recursive call of waitForRpcConnection
-        if (!init()) {
-            closeRpcConnection();
-            shouldWaitConnection_ = true;
-            return false;
-        }
-
-        if (isActivated_) {
-            // we lost connection while being activated previously
-            // re-initialize the whole text service.
-            // activate the text service again.
-            onActivate();
-        }
-        shouldWaitConnection_ = true;
+    if (backoffBlocked()) {
+        return false;
     }
+
+    pipe_ = connectPipe(getPipeName().c_str(), kConnectTimeoutMs);
+    if (pipe_ == INVALID_HANDLE_VALUE) {
+        DWORD err = ::GetLastError();
+        DWORD delay = backoffFail();
+        tsfLog("连接 PYIME 服务端失败(err=%lu);%lu ms 内不重连", (unsigned long)err, (unsigned long)delay);
+        return false;
+    }
+    tsfLog("已连接 PYIME 服务端");
+
+    // send initialization info to the server for hand-shake.
+    shouldWaitConnection_ = false;  // prevent recursive call of waitForRpcConnection
+    if (!init()) {
+        closeRpcConnection();
+        shouldWaitConnection_ = true;
+        return false;
+    }
+
+    if (isActivated_) {
+        // we lost connection while being activated previously
+        // re-initialize the whole text service.
+        // activate the text service again.
+        onActivate();
+    }
+    shouldWaitConnection_ = true;
     // if init() or onActivate() RPC fails, the pipe_ might have been closed.
     return pipe_ != INVALID_HANDLE_VALUE;
 }
@@ -786,20 +876,18 @@ void Client::closeRpcConnection() {
 	}
 }
 
-wstring Client::getPipeName(const wchar_t* base_name) {
+// PYIME:\\.\pipe\<用户名>\PYIME(含用户名,避免多用户串话)
+wstring Client::getPipeName() {
 	wstring pipeName = L"\\\\.\\pipe\\";
 	DWORD len = 0;
 	::GetUserNameW(NULL, &len); // get the required size of the buffer
-	// PYIME: 返回类型是 wstring,原 return false 在 mingw 下无法编译,下面两处 return 改为 wstring()
 	if (len <= 0)
 		return wstring();
-	// add username to the pipe path so it won't clash with the other users' pipes
 	unique_ptr<wchar_t[]> username(new wchar_t[len]);
 	if (!::GetUserNameW(username.get(), &len))
 		return wstring();
 	pipeName += username.get();
-	pipeName += L"\\PIME\\";
-	pipeName += base_name;
+	pipeName += L"\\PYIME";
 	return pipeName;
 }
 
