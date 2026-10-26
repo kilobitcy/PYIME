@@ -12,6 +12,10 @@ fn 观察候选() {
     if let Ok(g) = std::env::var("PYIME_GRAM") {
         engine.set_gram(pyime_engine::gram::Gram::from_bytes(std::fs::read(g).unwrap()).unwrap());
     }
+    // PYIME_USER 指定 user.txt 时带用户学习数据观察
+    if let Ok(u) = std::env::var("PYIME_USER") {
+        engine.set_user(pyime_engine::user::UserModel::import(&std::fs::read_to_string(u).unwrap()));
+    }
     let inputs = std::env::var("PYIME_INPUTS").unwrap_or("nihao,zhongguo,zongguo,shurufa,surufa,women,fujian,husheng".into());
     for input in inputs.split(',') {
         let t = std::time::Instant::now();

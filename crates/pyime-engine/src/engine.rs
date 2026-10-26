@@ -30,6 +30,8 @@ const MAX_SYLLABLES: usize = 10;
 const SENTENCES: usize = 3;
 /// 整句排序时精确整句的领先分:模糊整句得分须高出这么多才排到它前面。
 const SENTENCE_EXACT_MARGIN: f64 = 1.5;
+/// 整句中单字词的个人学习加分上限(自然对数域)。
+const SENTENCE_CHAR_BONUS_CAP: f64 = 5.0;
 /// 束宽:整句搜索每个位置保留的路径数。
 const BEAM: usize = 12;
 /// 模糊/残缺路径的束宽。
@@ -506,12 +508,14 @@ fn sentences(input: &str, words: &[Word], far: usize, bigram: &dyn Fn(&str, &str
     for &i in &order {
         let w = &words[i];
         let mut next = Vec::new();
+        // 单字的个人学习加分在句中封顶:单独选过的字不应凭学习分压过多字词
+        let excess = if w.text.chars().count() == 1 { (w.bonus - SENTENCE_CHAR_BONUS_CAP).max(0.0) } else { 0.0 };
         if w.start == 0 {
-            next.push((w.score - WORD_COST, i, 0, tail(&w.text), w.loose()));
+            next.push((w.score - excess - WORD_COST, i, 0, tail(&w.text), w.loose()));
         } else {
             for (r, p) in best[w.start].iter().enumerate() {
                 let split = steals(input, words[p.1].last, w.start, w.partial && w.cuts.is_empty());
-                let total = p.0 + w.score - WORD_COST + bigram(&p.3, &w.text) - if split { SPLIT_PENALTY + w.bonus } else { 0.0 };
+                let total = p.0 + w.score - WORD_COST + bigram(&p.3, &w.text) - if split { SPLIT_PENALTY + w.bonus } else { excess };
                 next.push((total, i, r, tail(&format!("{}{}", p.3, w.text)), p.4 || w.loose()));
             }
         }
@@ -881,6 +885,19 @@ mod tests {
         assert_eq!(texts(&e, "shilie")[0], "四列");
         // 单独键入 e 时学习照常生效
         assert_eq!(texts(&e, "e")[0], "饿");
+    }
+
+    #[test]
+    fn 学过的单字不使拼凑整句压过整段模糊词() {
+        // 日志实例:常单选 已 后,zhuangyi 的首选由 转移(uan=uang)变成 装已
+        let mut e = engine(&[("zhuan", "转", 50_000), ("zhuang", "装", 30_000), ("yi", "一", 1_000_000), ("yi", "已", 200_000), ("zhuan yi", "转移", 30_000)]);
+        assert_eq!(texts(&e, "zhuangyi")[0], "转移");
+        for _ in 0..17 {
+            e.learn("yi", "已");
+        }
+        assert_eq!(texts(&e, "zhuangyi")[0], "转移");
+        // 单独键入 yi 时学习照常生效
+        assert_eq!(texts(&e, "yi")[0], "已");
     }
 
     #[test]

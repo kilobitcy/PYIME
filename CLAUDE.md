@@ -94,9 +94,10 @@ Windows 11 拼音输入法。目标:界面与功能像微信输入法一样简�
 - pyime-server.exe(worker)启动时读 `user.txt`;每次选词把内存数据整份写回。
 - 外部修改保护:记下上次读入/写盘后的 mtime 与长度,不一致即不写回(学习只留在内存),直到托盘菜单"重新加载用户词库"成功;启动时读不出(非 UTF-8)也不写回,不再丢数据。
 - 重新加载会去 BOM、CRLF→LF;非 UTF-8 时不读入、继续保护。"编辑用户词库…"先写盘、备份 `user.txt.bak`,再开记事本。
-- 启动时的导入仍不处理 BOM(首行失效)与 CRLF(`\r` 致计数解析失败、整行跳过);重新加载一次即被规整。
+- 启动时读入与重新加载同样规整(去 BOM、CRLF→LF,`ime.rs` `normalize_user`)。
 
-### 待办(截至 2026-10-23)
-- 托盘菜单与符号候选已按 `menucheck.txt` 实机验证通过(2026-10-23);自带 TSF 前端已按 `test-kit/tsf.txt` 实机验证通过;0.1.15 待发布(push/打 tag/发布前须先问用户)。
+### 待办(截至 2026-10-26)
+- 托盘菜单与符号候选已按 `menucheck.txt` 实机验证通过(2026-10-23);自带 TSF 前端已按 `test-kit/tsf.txt` 实机验证通过;0.1.15 已发布(2026-10-24)。
+- 长句不准(用户反馈 2026-10-26):主因是单选学过的单字(如 yi→已 ×17)个人加分 ≥11,在整句里压过多字词;已在 `sentences()` 把句中单字的个人加分封顶 `SENTENCE_CHAR_BONUS_CAP`=5.0。带用户 `user.txt` 对日志 342 条长输入首选变化 13 条,均为改善(转已→转移、我转前→我赚钱 等),无变坏;待实机确认。`real_engine` 支持 `PYIME_USER=<user.txt>`。
 - `scripts/windows/user-reload.ps1` 已改为停启 pyime-server.exe,reload-user.bat 已按 `test-kit/tsf.txt` 第 14 项实机验证;edit-user.bat 未单独实机验证。
 - 符号候选终审未修 Minor:"英文候选不挂符号"无单测;英文候选会被带符号的宿主挤后 1–2 位;`symbols.txt` 非 UTF-8 时整表跳过。
