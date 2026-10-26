@@ -39,6 +39,15 @@ fn 启动时读不出的文件不被覆盖() {
 }
 
 #[test]
+fn 启动时读入带bom与crlf的文件() {
+    let p = temp_user_path("bom");
+    std::fs::write(&p, "\u{feff}ni\t泥\t9\r\nhao\t好\t3\r\n").unwrap();
+    let ime = Ime::with_user_path(engine(), p.clone());
+    let t = ime.user_export();
+    assert!(t.contains("ni\t泥\t9") && t.contains("hao\t好\t3") && !t.contains('\u{feff}'), "{t}");
+}
+
+#[test]
 fn 重新加载读入外部修改并恢复写回() {
     let p = temp_user_path("reload");
     let ime = Ime::with_user_path(engine(), p.clone());

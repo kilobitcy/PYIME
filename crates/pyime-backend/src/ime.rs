@@ -130,6 +130,11 @@ fn read_optional(p: &std::path::Path) -> Option<String> {
     }
 }
 
+/// 规整手工编辑过的 `user.txt`:去 BOM、CRLF→LF。
+fn normalize_user(text: &str) -> String {
+    text.strip_prefix('\u{feff}').unwrap_or(text).replace("\r\n", "\n")
+}
+
 /// 英文词表:安装目录 `pyime.en` + 用户 `en.txt`(档位 0),再读回车学习计数;缺失的来源跳过。
 fn load_english(learned: Option<&PathBuf>) -> English {
     let mut items = match en_path().map(|p| (std::fs::read_to_string(&p), p)) {
@@ -182,7 +187,7 @@ impl Ime {
     fn read_user(engine: &mut Engine, p: &Path) -> Option<(SystemTime, u64)> {
         match std::fs::read_to_string(p) {
             Ok(text) => {
-                engine.set_user(UserModel::import(&text));
+                engine.set_user(UserModel::import(&normalize_user(&text)));
                 stamp(p)
             }
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
@@ -246,7 +251,7 @@ impl Ime {
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => String::new(),
             Err(e) => return Err(format!("读取 {path:?} 失败: {e}")),
         };
-        let text = text.strip_prefix('\u{feff}').unwrap_or(&text).replace("\r\n", "\n");
+        let text = normalize_user(&text);
         let mut engine = self.engine.borrow_mut();
         engine.set_user(UserModel::import(&text));
         engine.set_english(load_english(self.en_learned_path.as_ref()));
