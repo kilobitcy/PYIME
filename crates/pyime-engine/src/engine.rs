@@ -2,8 +2,8 @@
 use crate::dict::Dict;
 use crate::english::{English, Hit, TIER_CUSTOM};
 use crate::gram::Gram;
-use crate::fuzzy::{partial, variants, FuzzyConfig};
-use crate::pinyin::{is_syllable, steals, syllables_at};
+use crate::fuzzy::{partial, spellings_at, variants, FuzzyConfig};
+use crate::pinyin::{is_syllable, steals};
 use crate::symbol::Symbols;
 use crate::user::UserModel;
 
@@ -322,9 +322,13 @@ impl Engine {
     /// 收集从 `pos` 出发的所有词(沿切分格深搜,词典前缀不存在即剪枝)。
     fn grow(&self, input: &str, start: usize, pos: usize, key: &str, acc: Acc, depth: usize, cuts: &mut Vec<usize>, out: &mut Vec<Word>) {
         self.grow_partial(input, start, pos, key, acc, cuts, out);
-        for syl in syllables_at(input, pos) {
+        for syl in spellings_at(input, pos, &self.cfg) {
             let end = pos + syl.len();
             for (v, c, m) in variants(syl, &self.cfg) {
+                // 只有模糊后才合法的写法(zhon),原样不是音节,只走模糊变体
+                if c == 0 && !is_syllable(&v) {
+                    continue;
+                }
                 let next = if key.is_empty() { v } else { format!("{key} {v}") };
                 if !self.dict.has_prefix(&next) {
                     continue;
@@ -375,7 +379,7 @@ impl Engine {
             if !reach[a] {
                 continue;
             }
-            for s in syllables_at(input, a) {
+            for s in spellings_at(input, a, &self.cfg) {
                 reach[a + s.len()] = true;
             }
             self.grow(input, a, a, "", Acc { prev: a, ..Acc::default() }, 0, &mut Vec::new(), &mut words);
@@ -898,6 +902,13 @@ mod tests {
         assert_eq!(texts(&e, "zhuangyi")[0], "转移");
         // 单独键入 yi 时学习照常生效
         assert_eq!(texts(&e, "yi")[0], "已");
+    }
+
+    #[test]
+    fn 只有模糊后才合法的音节也能拼整句() {
+        // 实例:用户打 yongzhonwendafu(zhon 经 on=ong 为 zhong),此前切分在 zhon 处断开,只剩 用
+        let e = engine(&[("yong", "用", 50_000), ("zhong", "中", 50_000), ("wen", "文", 30_000), ("zhong wen", "中文", 20_000), ("da fu", "答复", 10_000)]);
+        assert_eq!(texts(&e, "yongzhonwendafu")[0], "用中文答复");
     }
 
     #[test]

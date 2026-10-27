@@ -71,7 +71,7 @@ pub fn canonical(s: &str) -> &str {
 }
 
 /// 音节最长 6 个字母(zhuang/chuang/shuang)。
-const MAX_LEN: usize = 6;
+pub(crate) const MAX_LEN: usize = 6;
 
 /// `input[pos..]` 的所有合法音节前缀(由短到长);`input` 须为小写 ASCII。
 pub fn syllables_at(input: &str, pos: usize) -> Vec<&str> {
