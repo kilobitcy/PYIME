@@ -927,8 +927,53 @@ fn 右键菜单含版本与三项命令() {
     assert_eq!(m[0]["enabled"], false);
     assert_eq!(m[1], json!({}));
     let texts: Vec<&str> = m.iter().filter_map(|i| i["text"].as_str()).collect();
-    assert_eq!(texts[1..], ["编辑用户词库…", "重新加载用户词库", "打开数据目录"]);
-    assert!(m.iter().filter(|i| i.get("text").is_some()).all(|i| i["id"].as_u64().unwrap() >= 1));
+    assert_eq!(texts[1..], ["模糊音", "编辑用户词库…", "重新加载用户词库", "打开数据目录"]);
+    assert!(m.iter().filter(|i| i.get("text").is_some() && i.get("submenu").is_none()).all(|i| i["id"].as_u64().unwrap() >= 1));
+}
+
+/// 右键菜单里"模糊音"子菜单的 (文字, 是否勾选)。
+fn fuzzy_items(s: &mut Session) -> Vec<(String, bool)> {
+    let r = s.handle(&json!({"method": "onMenu", "seqNum": 5, "id": "windows-mode-icon"}));
+    let m = r["return"].as_array().unwrap();
+    let sub = m.iter().find(|i| i["text"] == "模糊音").unwrap()["submenu"].as_array().unwrap().clone();
+    sub.iter().map(|i| (i["text"].as_str().unwrap().to_string(), i["checked"] == true)).collect()
+}
+
+#[test]
+fn 模糊音子菜单默认十对全勾() {
+    let mut s = win8_session();
+    let items = fuzzy_items(&mut s);
+    assert_eq!(items.len(), 10);
+    assert_eq!(items[0], ("z=zh".to_string(), true));
+    assert_eq!(items[9], ("uan=uang".to_string(), true));
+}
+
+#[test]
+fn 模糊音菜单项切换开关并写盘() {
+    let p = crate::ime::temp_user_path("fuzzy-menu");
+    let f = p.with_file_name("fuzzy.txt");
+    let mut s = Session::new(Ime::with_user_path(engine(), p.clone()));
+    assert_eq!(menu_cmd(&mut s, tray::CMD_FUZZY + 4)["return"], true);
+    assert_eq!(std::fs::read_to_string(&f).unwrap(), "r=l\n");
+    assert_eq!(fuzzy_items(&mut s)[4], ("r=l".to_string(), false));
+    // 重启后仍关闭
+    let mut s = Session::new(Ime::with_user_path(engine(), p.clone()));
+    assert_eq!(fuzzy_items(&mut s)[4], ("r=l".to_string(), false));
+    assert_eq!(menu_cmd(&mut s, tray::CMD_FUZZY + 4)["return"], true);
+    assert_eq!(std::fs::read_to_string(&f).unwrap(), "");
+    assert!(fuzzy_items(&mut s).iter().all(|i| i.1));
+    assert_eq!(menu_cmd(&mut s, tray::CMD_FUZZY + 10)["return"], false); // 越界 id 不处理
+}
+
+#[test]
+fn 关闭模糊音后不再出模糊候选() {
+    const L: i64 = 76;
+    let has_ni = |r: &Value| r["candidateList"].as_array().is_some_and(|c| c.iter().any(|c| c == "你"));
+    let mut s = win8_session();
+    assert!(has_ni(&press(&mut s, &[L, I])));
+    let mut s = win8_session();
+    assert_eq!(menu_cmd(&mut s, tray::CMD_FUZZY + 3)["return"], true); // n=l
+    assert!(!has_ni(&press(&mut s, &[L, I])));
 }
 
 #[test]
@@ -939,7 +984,7 @@ fn 菜单命令分发到编辑_重载与打开目录() {
     assert_eq!(s.ime.take_launched(), vec![format!("notepad.exe {}", p.display())]);
     std::fs::write(&p, "ni\t泥\t9").unwrap();
     let r = s.handle(&json!({"method": "onMenu", "seqNum": 7, "id": "windows-mode-icon"}));
-    assert_eq!(r["return"][3]["text"], "重新加载用户词库(文件已修改)");
+    assert_eq!(r["return"][5]["text"], "重新加载用户词库(文件已修改)");
     assert_eq!(menu_cmd(&mut s, 12)["return"], true);
     assert!(s.ime.user_export().contains("ni\t泥\t9"));
     assert_eq!(menu_cmd(&mut s, 13)["return"], true);

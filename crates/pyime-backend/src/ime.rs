@@ -130,6 +130,18 @@ fn read_optional(p: &std::path::Path) -> Option<String> {
     }
 }
 
+/// 模糊音开关文件 `fuzzy.txt`:与 `user.txt` 同目录,每行一个关闭的规则。
+fn fuzzy_path(user: Option<&Path>) -> Option<PathBuf> {
+    user.map(|p| p.with_file_name("fuzzy.txt"))
+}
+
+/// 读入模糊音开关;文件不存在时全开。
+fn read_fuzzy(engine: &mut Engine, user: Option<&Path>) {
+    if let Some(t) = fuzzy_path(user).and_then(|p| read_optional(&p)) {
+        engine.set_fuzzy(FuzzyConfig::parse_off(&t));
+    }
+}
+
 /// 规整手工编辑过的 `user.txt`:去 BOM、CRLF→LF。
 fn normalize_user(text: &str) -> String {
     text.strip_prefix('\u{feff}').unwrap_or(text).replace("\r\n", "\n")
@@ -213,6 +225,7 @@ impl Ime {
             engine.set_symbols(Symbols::parse(&t));
         }
         let user_path = user_path();
+        read_fuzzy(&mut engine, user_path.as_deref());
         let user_stamp = user_path.as_deref().and_then(|p| Self::read_user(&mut engine, p));
         log::line(&format!("引擎就绪,耗时 {:?}", t.elapsed()));
         Self::build(engine, user_path, en_learned_path, user_stamp)
@@ -227,6 +240,7 @@ impl Ime {
     /// 测试用:用户数据读写指定文件(按启动时的规则读入),不读词典等其他文件。
     #[cfg(test)]
     pub fn with_user_path(mut engine: Engine, path: PathBuf) -> Rc<Ime> {
+        read_fuzzy(&mut engine, Some(&path));
         let stamp = Self::read_user(&mut engine, &path);
         Self::build(engine, Some(path), None, stamp)
     }
@@ -270,6 +284,26 @@ impl Ime {
             log::line(&format!("备份 {path:?} 失败: {e}"));
         }
         self.launch("notepad.exe", path);
+    }
+
+    /// 当前模糊音开关。
+    pub fn fuzzy(&self) -> FuzzyConfig {
+        self.engine.borrow().fuzzy().clone()
+    }
+
+    /// 模糊音子菜单:切换第 `i` 对规则,即时生效并写 `fuzzy.txt`(与 `user.txt` 同目录)。
+    pub fn toggle_fuzzy(&self, i: usize) {
+        let mut cfg = self.fuzzy();
+        let on = !cfg.is_on(i);
+        cfg.set(i, on);
+        let text = cfg.export_off();
+        self.engine.borrow_mut().set_fuzzy(cfg);
+        crate::log::line(&format!("菜单:模糊音 {} {}", FuzzyConfig::rule_names()[i], if on { "开" } else { "关" }));
+        let Some(path) = fuzzy_path(self.user_path.as_deref()) else { return };
+        let _ = path.parent().map(std::fs::create_dir_all);
+        if let Err(e) = std::fs::write(&path, text) {
+            crate::log::line(&format!("写入 {path:?} 失败: {e}"));
+        }
     }
 
     /// 菜单"打开数据目录":目录不存在先建(从未选过词时还没有),再用资源管理器打开。

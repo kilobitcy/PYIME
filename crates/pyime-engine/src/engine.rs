@@ -204,6 +204,15 @@ impl Engine {
         self.fuzzy_penalty = p;
     }
 
+    /// 换一套模糊音开关(托盘菜单逐对开关)。
+    pub fn set_fuzzy(&mut self, cfg: FuzzyConfig) {
+        self.cfg = cfg;
+    }
+
+    pub fn fuzzy(&self) -> &FuzzyConfig {
+        &self.cfg
+    }
+
     /// 一次模糊替换的惩罚;单字词另加 `SINGLE_CHAR_FUZZY_EXTRA`。
     fn penalty(&self, single: bool) -> f64 {
         self.fuzzy_penalty + if single { SINGLE_CHAR_FUZZY_EXTRA } else { 0.0 }

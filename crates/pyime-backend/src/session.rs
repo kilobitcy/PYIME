@@ -215,7 +215,7 @@ impl Session {
             "init" => self.win8 = req["isWindows8Above"] == true,
             "onActivate" if self.win8 => resp["addButton"] = json!([tray::mode_button(self.english)]),
             "onDeactivate" if self.win8 => resp["removeButton"] = json!([tray::MODE_ICON]),
-            "onMenu" if req["id"] == tray::MODE_ICON => resp["return"] = tray::menu(self.ime.user_file_changed()),
+            "onMenu" if req["id"] == tray::MODE_ICON => resp["return"] = tray::menu(self.ime.user_file_changed(), &self.ime.fuzzy()),
             "onCommand" => self.on_command(req, &mut resp),
             _ => {}
         }
@@ -270,6 +270,10 @@ impl Session {
             (tray::CMD_OPEN_DIR, tray::COMMAND_MENU) => {
                 crate::log::line("菜单:打开数据目录");
                 self.ime.open_data_dir();
+                true
+            }
+            (id, tray::COMMAND_MENU) if (tray::CMD_FUZZY..tray::CMD_FUZZY + 10).contains(&id) => {
+                self.ime.toggle_fuzzy((id - tray::CMD_FUZZY) as usize);
                 true
             }
             _ => false,

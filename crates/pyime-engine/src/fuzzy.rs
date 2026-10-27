@@ -24,6 +24,36 @@ impl FuzzyConfig {
     pub fn none() -> Self {
         FuzzyConfig { initials: [false; 5], finals: [false; 5] }
     }
+
+    /// 十对规则的名字(如 `z=zh`),下标即规则位:声母 0–4,韵母 5–9。
+    pub fn rule_names() -> Vec<String> {
+        INITIALS.iter().chain(&FINALS).map(|(a, b)| format!("{a}={b}")).collect()
+    }
+
+    pub fn is_on(&self, i: usize) -> bool {
+        if i < 5 { self.initials[i] } else { self.finals[i - 5] }
+    }
+
+    pub fn set(&mut self, i: usize, on: bool) {
+        if i < 5 { self.initials[i] = on } else { self.finals[i - 5] = on }
+    }
+
+    /// 读配置文本:每行一个关闭的规则名,其余规则开;不认识的行忽略。
+    pub fn parse_off(text: &str) -> Self {
+        let names = Self::rule_names();
+        let mut cfg = Self::default();
+        for line in text.trim_start_matches('\u{feff}').lines() {
+            if let Some(i) = names.iter().position(|n| n == line.trim()) {
+                cfg.set(i, false);
+            }
+        }
+        cfg
+    }
+
+    /// 写配置文本:关闭的规则名,每行一个;全开时为空。
+    pub fn export_off(&self) -> String {
+        Self::rule_names().into_iter().enumerate().filter(|&(i, _)| !self.is_on(i)).map(|(_, n)| n + "\n").collect()
+    }
 }
 
 /// 拆成 (声母, 韵母);零声母时声母为空。
@@ -143,6 +173,21 @@ mod tests {
         let mut cfg = FuzzyConfig::none();
         cfg.initials[0] = true;
         assert_eq!(keys("zan", &cfg), ["zan", "zhan"]);
+    }
+
+    #[test]
+    fn 规则开关按名字读写_只记关闭的() {
+        assert_eq!(FuzzyConfig::rule_names()[3], "n=l");
+        assert_eq!(FuzzyConfig::rule_names()[9], "uan=uang");
+        let mut cfg = FuzzyConfig::default();
+        assert_eq!(cfg.export_off(), "");
+        cfg.set(4, false);
+        cfg.set(8, false);
+        assert!(!cfg.is_on(4) && cfg.is_on(5));
+        assert_eq!(cfg.export_off(), "r=l\non=ong\n");
+        // 未知名字、空行、注释、BOM、CRLF 忽略
+        let back = FuzzyConfig::parse_off("\u{feff}# 关闭的模糊音\r\nr=l\r\n\r\nx=y\non=ong");
+        assert_eq!((back.initials, back.finals), (cfg.initials, cfg.finals));
     }
 
     #[test]
