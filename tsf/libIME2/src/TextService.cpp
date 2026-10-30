@@ -27,6 +27,7 @@
 #include <assert.h>
 #include <string>
 #include <algorithm>
+#include <cstdio>
 
 using namespace std;
 
@@ -714,11 +715,37 @@ STDMETHODIMP TextService::OnSetFocus(BOOL fForeground) {
     return S_OK;
 }
 
+// PYIME:诊断。字母键按下未交给输入法时报告原因,分别给出焦点上下文(isKeyboardDisabled 实际查的)
+// 与本次按键所属上下文 pContext 的隔间值;连续放行只报第一次,免得在禁用的输入框里刷屏。
+void TextService::reportPassThrough(ITfContext* context, WPARAM wParam) {
+    if (wParam < 'A' || wParam > 'Z' || passThroughReported_)
+        return;
+    passThroughReported_ = true;
+    auto value = [&](const GUID& key, ITfContext* ctx) -> long {
+        auto compartment = contextCompartment(key, ctx);
+        return compartment ? (long)compartmentValue(compartment) : -1;
+    };
+    ComPtr<ITfContext> focus = currentContext();
+    char detail[256];
+    std::snprintf(detail, sizeof(detail),
+        "键盘开=%d 焦点上下文%s(禁用=%ld 空=%ld) 按键上下文%s(禁用=%ld 空=%ld)",
+        isKeyboardOpened() ? 1 : 0,
+        focus ? (static_cast<ITfContext*>(focus) == context ? "=按键上下文" : "") : "无",
+        focus ? value(GUID_COMPARTMENT_KEYBOARD_DISABLED, focus) : -1,
+        focus ? value(GUID_COMPARTMENT_EMPTYCONTEXT, focus) : -1,
+        context ? "" : "无",
+        context ? value(GUID_COMPARTMENT_KEYBOARD_DISABLED, context) : -1,
+        context ? value(GUID_COMPARTMENT_EMPTYCONTEXT, context) : -1);
+    onKeyPassedThrough(detail);
+}
+
 STDMETHODIMP TextService::OnTestKeyDown(ITfContext *pContext, WPARAM wParam, LPARAM lParam, BOOL *pfEaten) {
     if (isKeyboardDisabled(pContext) || !isKeyboardOpened()) {
         *pfEaten = FALSE;
+        reportPassThrough(pContext, wParam);
     }
     else {
+        passThroughReported_ = false;
         KeyEvent keyEvent(WM_KEYDOWN, wParam, lParam);
         *pfEaten = (BOOL)filterKeyDown(keyEvent);
     }
@@ -730,8 +757,10 @@ STDMETHODIMP TextService::OnKeyDown(ITfContext *pContext, WPARAM wParam, LPARAM 
     // So we need to test it again here! Windows TSF sucks!
     if (isKeyboardDisabled(pContext) || !isKeyboardOpened()) {
         *pfEaten = FALSE;
+        reportPassThrough(pContext, wParam);
     }
     else {
+        passThroughReported_ = false;
         KeyEvent keyEvent(WM_KEYDOWN, wParam, lParam);
         *pfEaten = (BOOL)filterKeyDown(keyEvent);
         if(*pfEaten) { // we want to eat the key

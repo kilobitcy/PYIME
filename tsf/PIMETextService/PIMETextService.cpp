@@ -24,6 +24,7 @@
 #include <libIME2/src/Utils.h>
 #include <libIME2/src/LangBarButton.h>
 #include "PIMEImeModule.h"
+#include "TsfLog.h"
 #include "resource.h"
 #include <Shellapi.h>
 #include <sys/stat.h>
@@ -224,6 +225,10 @@ void TextService::onLangProfileActivated(REFIID lang) {
 
 void TextService::onLangProfileDeactivated(REFIID lang) {
 	closeClient();
+}
+
+void TextService::onKeyPassedThrough(const char* detail) {
+	tsfLog("字母键未交给输入法:%s", detail);
 }
 
 void TextService::createCandidateWindow(Ime::EditSession* session) {

@@ -55,6 +55,8 @@ build() {  # build <x64|x86>
 # 纯逻辑单测(本机 g++)
 g++ -std=c++17 -Wall -I"$SRC/PIMETextService" "$SRC/tests/backoff_test.cpp" -o "$SHIM/backoff_test"
 "$SHIM/backoff_test"
+g++ -std=c++17 -Wall -I"$SRC/PIMETextService" "$SRC/tests/rpc_retry_test.cpp" -o "$SHIM/rpc_retry_test"
+"$SHIM/rpc_retry_test"
 
 build x64
 build x86

@@ -90,6 +90,7 @@ private:
     void closeRpcConnection();
     // PYIME:请求失败即断线:关管道、进入退避、结束组字并藏窗
     void onRpcFailure(const char* method, const char* what);
+    bool resendAfterReconnect(Json::Value& request, std::string& serializedResponse, unsigned int& seqNum, ULONGLONG deadline);
     void abandonComposition();
 
 	bool init();

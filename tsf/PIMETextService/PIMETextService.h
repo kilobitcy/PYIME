@@ -75,6 +75,9 @@ public:
 
 	virtual void onLangProfileDeactivated(REFIID lang);
 
+	// PYIME:诊断,写 tsf.log(不记是哪个键)
+	virtual void onKeyPassedThrough(const char* detail);
+
 	// methods called by PIME::Client
 	int candPerRow() const {
 		return candPerRow_;

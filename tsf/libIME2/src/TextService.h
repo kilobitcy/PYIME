@@ -198,6 +198,9 @@ public:
     // called when a language profile is deactivated
     virtual void onLangProfileDeactivated(REFGUID guidProfile);
 
+    // PYIME:诊断。字母键按下因上下文禁用/空上下文/键盘关闭而未交给输入法时回调(连续放行只报第一次);默认不做事。
+    virtual void onKeyPassedThrough(const char* detail) {}
+
     // COM related stuff
 public:
     friend class DisplayAttributeInfoEnum;
@@ -272,6 +275,9 @@ private:
     TfClientId clientId_;
     DWORD activateFlags_;
     bool isKeyboardOpened_;
+    bool passThroughReported_ = false; // PYIME:见 reportPassThrough
+
+    void reportPassThrough(ITfContext* context, WPARAM wParam);
 
     // event sink cookies
     SinkAdvice threadMgrEventSink_;

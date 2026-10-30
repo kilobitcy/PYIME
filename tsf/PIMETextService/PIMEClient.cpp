@@ -35,6 +35,7 @@
 #include <VersionHelpers.h>  // Provided by Windows SDK >= 8.1
 #include "Backoff.h"
 #include "TsfLog.h"
+#include "RpcRetry.h"
 
 using namespace std;
 
@@ -51,6 +52,17 @@ static const size_t kMaxReplyBytes = 1u << 20;
 static Backoff g_backoff;
 static SRWLOCK g_backoffLock = SRWLOCK_INIT;
 
+// PYIME:退避期内放行已报过(每个退避周期每进程只报一次,与退避状态同锁)
+static bool g_blockedReported = false;
+
+static bool takeBlockedReport() {
+    ::AcquireSRWLockExclusive(&g_backoffLock);
+    bool first = !g_blockedReported;
+    g_blockedReported = true;
+    ::ReleaseSRWLockExclusive(&g_backoffLock);
+    return first;
+}
+
 static bool backoffBlocked() {
     ::AcquireSRWLockShared(&g_backoffLock);
     bool blocked = g_backoff.blocked(::GetTickCount64());
@@ -61,6 +73,7 @@ static bool backoffBlocked() {
 static DWORD backoffFail() {
     ::AcquireSRWLockExclusive(&g_backoffLock);
     DWORD delay = g_backoff.fail(::GetTickCount64());
+    g_blockedReported = false;  // 新的退避周期
     ::ReleaseSRWLockExclusive(&g_backoffLock);
     return delay;
 }
@@ -755,7 +768,7 @@ bool Client::callRpcMethod(Json::Value& request, Json::Value & response) {
     }
 
     // Add a sequence number for the request.
-    auto seqNum = nextSeqNum_++;
+    unsigned int seqNum = nextSeqNum_++;
     request["seqNum"] = seqNum;
 
 	Json::FastWriter writer;
@@ -763,7 +776,14 @@ bool Client::callRpcMethod(Json::Value& request, Json::Value & response) {
     std::string method = request["method"].asString();
 
     std::string serializedResponse;
-    if (!callRpcPipe(serializedRequest, serializedResponse, kRpcTimeoutMs)) {
+    const ULONGLONG deadline = ::GetTickCount64() + kRpcTimeoutMs;
+    bool ok = callRpcPipe(serializedRequest, serializedResponse, kRpcTimeoutMs);
+    if (!ok && shouldRetryRpc(method.c_str(), lastIoError_, textService_->isComposing())) {
+        ok = resendAfterReconnect(request, serializedResponse, seqNum, deadline);
+        if (!ok && pipe_ == INVALID_HANDLE_VALUE)
+            return false;  // PYIME:重连失败,已记日志;连接失败已由 waitForRpcConnection 计入退避
+    }
+    if (!ok) {
         onRpcFailure(method.c_str(), lastIoError_ == WAIT_TIMEOUT ? "超时" : "读写失败");
         return false;
     }
@@ -774,6 +794,30 @@ bool Client::callRpcMethod(Json::Value& request, Json::Value & response) {
 	}
     backoffSucceed();
 	return true;
+}
+
+// PYIME:管道已断(worker 被重启或崩溃)时立即重连并重发一次,救回本次按键,这一次断开不计入退避。
+// 先清掉旧连接的按钮:否则重连后 onActivate 回复的 addButton 会在 TSF 里留下重复的模式图标,
+// 之后 changeButton 更新的还是旧按钮。init/onActivate 各自受 kRpcTimeoutMs 约束;重发用本次请求剩余的时间。
+bool Client::resendAfterReconnect(Json::Value& request, std::string& serializedResponse, unsigned int& seqNum, ULONGLONG deadline) {
+    const std::string method = request["method"].asString();
+    const DWORD err = lastIoError_;
+    closeRpcConnection();
+    resetTextServiceState();
+    if (!waitForRpcConnection()) {
+        closeRpcConnection();  // init/onActivate 握手中途失败时可能残留半开连接
+        tsfLog("%s 管道已断(err=%lu),重连失败,放行", method.c_str(), (unsigned long)err);
+        return false;
+    }
+    seqNum = nextSeqNum_++;
+    request["seqNum"] = seqNum;
+    Json::FastWriter writer;
+    serializedResponse.clear();
+    const ULONGLONG now = ::GetTickCount64();
+    if (!callRpcPipe(writer.write(request), serializedResponse, now >= deadline ? 0 : DWORD(deadline - now)))
+        return false;  // 调用方 onRpcFailure:断线、退避、放行
+    tsfLog("%s 管道已断(err=%lu),已重连重发", method.c_str(), (unsigned long)err);
+    return true;
 }
 
 // PYIME:请求失败(超时/读写失败/回复异常)= 断线。顺序要紧:先关管道并进入退避,再结束组字——
@@ -852,6 +896,8 @@ bool Client::waitForRpcConnection() {
         return true;
     }
     if (backoffBlocked()) {
+        if (takeBlockedReport())
+            tsfLog("退避期内不连接,请求未发送,按键放行");
         return false;
     }
 
