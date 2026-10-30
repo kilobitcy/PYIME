@@ -33,3 +33,9 @@ user.txt 等用户数据全程不受影响。
 
 七、可选:托盘菜单不可用时的备用脚本(edit-user.bat、reload-user.bat、user-reload.ps1 放同一文件夹)
 14. 双击 reload-user.bat:显示"输入法已停止""已备份到 …""输入法已重新启动";之后打字正常。
+
+八、默认中/英与首键(0.1.17)
+15. 新开记事本、浏览器地址栏:默认英文(托盘"英");新开微信聊天框、WPS 文字:默认中文(托盘"中")。
+16. 记事本里右键托盘图标,勾"本程序默认中文(notepad.exe)":立即变中文;%LOCALAPPDATA%\PYIME\chinese-apps.txt 多出 notepad.exe;关掉记事本再开,默认中文。再取消勾选:立即变英文,文件里的 notepad.exe 消失。
+17. 记事本(默认英文)单击 Shift 切中文;任务管理器结束内存较大的 pyime-server.exe,等 5 秒;回记事本打 dui:候选正常出现(d 没丢),仍是中文,托盘只有一个图标且显示"中";%LOCALAPPDATA%\PYIME\tsf.log 有"已重连重发"。
+18. 平常使用中再遇到首字母丢失:记下大概时间,把 tsf.log 与 log.txt 对应时段贴回。
