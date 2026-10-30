@@ -232,7 +232,9 @@ impl Session {
                 resp["english"] = json!(self.english);
             }
             "onDeactivate" if self.win8 => resp["removeButton"] = json!([tray::MODE_ICON]),
-            "onMenu" if req["id"] == tray::MODE_ICON => resp["return"] = tray::menu(self.ime.user_file_changed(), &self.ime.fuzzy()),
+            "onMenu" if req["id"] == tray::MODE_ICON => {
+                resp["return"] = tray::menu(self.ime.user_file_changed(), &self.ime.fuzzy(), &self.exe, self.ime.is_chinese_app(&self.exe))
+            }
             "onCommand" => self.on_command(req, &mut resp),
             _ => {}
         }
@@ -283,6 +285,15 @@ impl Session {
                         crate::log::line("已重新加载用户词库");
                     }
                     Err(e) => crate::log::line(&format!("重新加载用户词库失败: {e}")),
+                }
+                true
+            }
+            (tray::CMD_CHINESE_APP, tray::COMMAND_MENU) if self.exe.is_empty() => false,
+            (tray::CMD_CHINESE_APP, tray::COMMAND_MENU) => {
+                let chinese = self.ime.toggle_chinese_app(&self.exe);
+                // 当前会话随即切到新的默认;组字中只改列表(onCommand 回复无编辑会话,不能上屏)
+                if !self.composing() && self.english == chinese {
+                    self.toggle_english(resp);
                 }
                 true
             }

@@ -927,7 +927,7 @@ fn 右键菜单含版本与三项命令() {
     assert_eq!(m[0]["enabled"], false);
     assert_eq!(m[1], json!({}));
     let texts: Vec<&str> = m.iter().filter_map(|i| i["text"].as_str()).collect();
-    assert_eq!(texts[1..], ["模糊音", "编辑用户词库…", "重新加载用户词库", "打开数据目录"]);
+    assert_eq!(texts[1..], ["模糊音", "本程序默认中文", "编辑用户词库…", "重新加载用户词库", "打开数据目录"]);
     assert!(m.iter().filter(|i| i.get("text").is_some() && i.get("submenu").is_none()).all(|i| i["id"].as_u64().unwrap() >= 1));
 }
 
@@ -984,7 +984,7 @@ fn 菜单命令分发到编辑_重载与打开目录() {
     assert_eq!(s.ime.take_launched(), vec![format!("notepad.exe {}", p.display())]);
     std::fs::write(&p, "ni\t泥\t9").unwrap();
     let r = s.handle(&json!({"method": "onMenu", "seqNum": 7, "id": "windows-mode-icon"}));
-    assert_eq!(r["return"][5]["text"], "重新加载用户词库(文件已修改)");
+    assert_eq!(r["return"][6]["text"], "重新加载用户词库(文件已修改)");
     assert_eq!(menu_cmd(&mut s, 12)["return"], true);
     assert!(s.ime.user_export().contains("ni\t泥\t9"));
     assert_eq!(menu_cmd(&mut s, 13)["return"], true);
@@ -1045,4 +1045,76 @@ fn 激活与切换的回复带中英状态() {
     assert_eq!(r["english"], false);
     assert_eq!(shift_click(&mut s)["english"], true);
     assert_eq!(left_click(&mut s)["english"], false);
+}
+
+fn app_session(p: &std::path::Path, exe: &str) -> Session {
+    let mut s = Session::open(Ime::with_user_path(engine(), p.to_path_buf()), exe);
+    s.handle(&json!({"method": "init", "seqNum": 1, "isWindows8Above": true}));
+    s
+}
+
+fn app_item(s: &mut Session) -> Value {
+    let r = s.handle(&json!({"method": "onMenu", "seqNum": 5, "id": "windows-mode-icon"}));
+    r["return"].as_array().unwrap().iter().find(|i| i["id"] == tray::CMD_CHINESE_APP).unwrap().clone()
+}
+
+#[test]
+fn 本程序默认中文_菜单项显示程序名与勾选() {
+    let p = crate::ime::temp_user_path("app-item");
+    let mut s = app_session(&p, "notepad.exe");
+    let item = app_item(&mut s);
+    assert_eq!(item["text"], "本程序默认中文(notepad.exe)");
+    assert_eq!(item["checked"], false);
+    let mut s = app_session(&p, "Weixin.exe");
+    assert_eq!(app_item(&mut s)["checked"], true);
+}
+
+#[test]
+fn 本程序默认中文_勾选写盘并立即切换() {
+    let p = crate::ime::temp_user_path("app-toggle");
+    let f = p.with_file_name("chinese-apps.txt");
+    let mut s = app_session(&p, "notepad.exe");
+    let r = menu_cmd(&mut s, tray::CMD_CHINESE_APP);
+    assert_eq!(r["return"], true);
+    assert_eq!(r["english"], false);
+    assert!(icon_of(&r["changeButton"]).ends_with("chi_full_capsoff.ico"));
+    assert!(std::fs::read_to_string(&f).unwrap().contains("notepad.exe"));
+    assert_eq!(key(&mut s, "filterKeyDown", N)["return"], true);
+    let r = menu_cmd(&mut s, tray::CMD_CHINESE_APP);
+    assert_eq!(r["english"], true);
+    assert!(!std::fs::read_to_string(&f).unwrap().contains("notepad.exe"));
+    assert_eq!(key(&mut s, "filterKeyDown", N)["return"], false);
+}
+
+#[test]
+fn 本程序默认中文_已是对应状态时不重复切换() {
+    let p = crate::ime::temp_user_path("app-same");
+    let mut s = app_session(&p, "notepad.exe");
+    shift_click(&mut s); // 手动切到中文
+    let r = menu_cmd(&mut s, tray::CMD_CHINESE_APP);
+    assert_eq!(r["return"], true);
+    assert!(r.get("changeButton").is_none());
+    assert_eq!(key(&mut s, "filterKeyDown", N)["return"], true);
+}
+
+#[test]
+fn 本程序默认中文_组字中只改列表不切状态() {
+    let p = crate::ime::temp_user_path("app-composing");
+    let f = p.with_file_name("chinese-apps.txt");
+    let mut s = app_session(&p, "Weixin.exe");
+    press(&mut s, &[N, I]);
+    let r = menu_cmd(&mut s, tray::CMD_CHINESE_APP);
+    assert_eq!(r["return"], true);
+    assert!(r.get("changeButton").is_none() && r.get("commitString").is_none());
+    assert!(!std::fs::read_to_string(&f).unwrap().contains("Weixin.exe"));
+    assert_eq!(key(&mut s, "filterKeyDown", N)["return"], true);
+}
+
+#[test]
+fn 本程序默认中文_取不到程序名时置灰且不处理() {
+    let mut s = win8_session();
+    let item = app_item(&mut s);
+    assert_eq!(item["text"], "本程序默认中文");
+    assert_eq!(item["enabled"], false);
+    assert_eq!(menu_cmd(&mut s, tray::CMD_CHINESE_APP)["return"], false);
 }
