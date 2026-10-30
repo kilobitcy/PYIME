@@ -130,6 +130,11 @@ void Client::addKeyEventToRpcRequest(Json::Value& request, Ime::KeyEvent& keyEve
 bool Client::handleRpcResponse(Json::Value& msg, Ime::EditSession* session) {
 	bool success = msg.get("success", false).asBool();
 	if (success) {
+		// PYIME:记下服务端告知的中/英状态,worker 重启重连后经 init 带回
+		if (msg["english"].isBool()) {
+			english_ = msg["english"].asBool();
+			hasEnglish_ = true;
+		}
 		updateStatus(msg, session);
 	}
 	return success;
@@ -662,6 +667,8 @@ bool Client::init() {
 	req["isMetroApp"] = textService_->isMetroApp();
 	req["isUiLess"] = textService_->isUiLess();
 	req["isConsole"] = textService_->isConsole();
+	if (hasEnglish_)
+		req["english"] = english_;  // PYIME:重连时带回断线前的中/英状态
 
 	Json::Value ret;
     return callRpcMethod(req, ret) && handleRpcResponse(ret);

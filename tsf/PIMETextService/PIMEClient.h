@@ -131,6 +131,8 @@ private:
 	unsigned int nextSeqNum_;
 	bool isActivated_;
     bool shouldWaitConnection_;
+    bool hasEnglish_ = false;  // PYIME:服务端告知过中/英状态(回复里的 english)
+    bool english_ = false;     // PYIME:最近一次的中/英状态,worker 重启重连时经 init 带回
 };
 
 }
