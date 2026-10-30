@@ -21,6 +21,11 @@ pub fn object_sddl(user_sid: &str) -> String {
     format!("D:(A;;GA;;;SY)(A;;GA;;;BA)(A;;GA;;;{user_sid})")
 }
 
+/// 进程映像全路径里的 exe 文件名(`C:\…\Weixin.exe` → `Weixin.exe`);路径为空或以分隔符结尾时为 None。
+pub fn exe_name(path: &str) -> Option<String> {
+    path.rsplit(['\\', '/']).next().filter(|s| !s.is_empty()).map(String::from)
+}
+
 #[cfg(windows)]
 pub mod sys {
     use std::ffi::c_void;
@@ -50,6 +55,9 @@ pub mod sys {
         pub fn ReadFile(h: Handle, buf: *mut u8, len: u32, read: *mut u32, overlapped: *mut c_void) -> i32;
         pub fn WriteFile(h: Handle, buf: *const u8, len: u32, written: *mut u32, overlapped: *mut c_void) -> i32;
         pub fn CloseHandle(h: Handle) -> i32;
+        pub fn GetNamedPipeClientProcessId(pipe: Handle, pid: *mut u32) -> i32;
+        pub fn OpenProcess(access: u32, inherit: i32, pid: u32) -> Handle;
+        pub fn QueryFullProcessImageNameW(process: Handle, flags: u32, name: *mut u16, size: *mut u32) -> i32;
         pub fn GetLastError() -> u32;
         pub fn LocalFree(mem: *mut c_void) -> *mut c_void;
         pub fn GetCurrentProcess() -> Handle;
@@ -186,6 +194,31 @@ pub mod sys {
         let ok = unsafe { WriteFile(h, data.as_ptr(), data.len() as u32, &mut n, std::ptr::null_mut()) };
         ok != 0 && n as usize == data.len()
     }
+
+    /// 管道对端进程的 exe 文件名(如 `Weixin.exe`);对端已退出、受保护进程等取不到时为 None。
+    pub fn client_exe(pipe: Handle) -> Option<String> {
+        const PROCESS_QUERY_LIMITED_INFORMATION: u32 = 0x1000;
+        let mut pid = 0u32;
+        let mut buf = [0u16; 1024];
+        let mut len = buf.len() as u32;
+        // SAFETY: pid/buf/len 为本地变量,长度如实传入;进程句柄用完即关。OpenProcess 失败返回 0(NULL)。
+        let ok = unsafe {
+            if GetNamedPipeClientProcessId(pipe, &mut pid) == 0 {
+                return None;
+            }
+            let process = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid);
+            if process == 0 {
+                return None;
+            }
+            let ok = QueryFullProcessImageNameW(process, 0, buf.as_mut_ptr(), &mut len);
+            CloseHandle(process);
+            ok
+        };
+        if ok == 0 {
+            return None;
+        }
+        super::exe_name(&String::from_utf16_lossy(&buf[..len as usize]))
+    }
 }
 
 #[cfg(test)]
@@ -210,5 +243,13 @@ mod tests {
         let s = object_sddl("S-1-5-21-1-2-3-1001");
         assert_eq!(s, "D:(A;;GA;;;SY)(A;;GA;;;BA)(A;;GA;;;S-1-5-21-1-2-3-1001)");
         assert!(!s.contains(";AC)"));
+    }
+
+    #[test]
+    fn 从全路径取exe文件名() {
+        assert_eq!(exe_name(r"C:\Program Files\Tencent\Weixin\Weixin.exe").as_deref(), Some("Weixin.exe"));
+        assert_eq!(exe_name("notepad.exe").as_deref(), Some("notepad.exe"));
+        assert_eq!(exe_name(""), None);
+        assert_eq!(exe_name(r"C:\dir\"), None);
     }
 }

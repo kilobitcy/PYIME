@@ -14,6 +14,8 @@ use std::time::{SystemTime, UNIX_EPOCH};
 pub const WATCHDOG_LIMIT_MS: u64 = 5000;
 
 pub enum Msg {
+    /// 新连接建立,`exe` 为对端宿主程序名(取不到为空);先于该连接的任何请求到达。
+    Opened { conn: u64, exe: String },
     /// 一条请求(管道消息原文)及回传回复的通道。
     Request { conn: u64, body: Vec<u8>, reply: Sender<Vec<u8>> },
     /// 连接断开。
@@ -23,6 +25,8 @@ pub enum Msg {
 struct Hub {
     ime: Rc<Ime>,
     sessions: HashMap<u64, Session>,
+    /// 各连接的宿主程序名,会话创建时据此定默认中/英。
+    exes: HashMap<u64, String>,
 }
 
 /// 工作线程"当前请求开始时刻"(UNIX 毫秒,0 = 空闲),看门狗线程据此判断是否卡死。
@@ -31,7 +35,11 @@ pub struct Busy(AtomicU64);
 
 impl Hub {
     fn new(ime: Rc<Ime>) -> Hub {
-        Hub { ime, sessions: HashMap::new() }
+        Hub { ime, sessions: HashMap::new(), exes: HashMap::new() }
+    }
+
+    fn open(&mut self, conn: u64, exe: String) {
+        self.exes.insert(conn, exe);
     }
 
     /// 处理一条请求;不是 UTF-8 JSON 时返回 None(不回复)。日志格式同 stdin 模式,前缀带连接号。
@@ -46,8 +54,12 @@ impl Hub {
             log::line("忽略:请求格式不合法");
             return None;
         };
-        let ime = &self.ime;
-        let sess = self.sessions.entry(conn).or_insert_with(|| Session::new(ime.clone()));
+        let (ime, exes) = (&self.ime, &self.exes);
+        let sess = self.sessions.entry(conn).or_insert_with(|| {
+            let exe = exes.get(&conn).map_or("", String::as_str);
+            log::line(&format!("会话 [{conn}] exe={exe} 默认{}", if ime.is_chinese_app(exe) { "中文" } else { "英文" }));
+            Session::open(ime.clone(), exe)
+        });
         let t = std::time::Instant::now();
         let out = sess.handle(&req).to_string();
         log::line(&format!("< [{conn}] {out}"));
@@ -56,6 +68,7 @@ impl Hub {
     }
 
     fn close(&mut self, conn: u64) {
+        self.exes.remove(&conn);
         if self.sessions.remove(&conn).is_some() {
             log::line(&format!("连接 {conn} 断开,剩余 {} 个会话", self.sessions.len()));
         }
@@ -72,6 +85,7 @@ pub fn run(rx: Receiver<Msg>, ime: Rc<Ime>, busy: &Busy) {
     let mut hub = Hub::new(ime);
     for msg in rx {
         match msg {
+            Msg::Opened { conn, exe } => hub.open(conn, exe),
             Msg::Request { conn, body, reply } => {
                 busy.begin();
                 let out = hub.request(conn, &body);
@@ -135,6 +149,8 @@ mod tests {
     #[test]
     fn 不同连接各自独立会话() {
         let mut hub = Hub::new(Ime::with_engine(engine()));
+        hub.open(1, "Weixin.exe".into());
+        hub.open(2, "Weixin.exe".into());
         assert_eq!(parse(&hub.request(1, &req(1, N)).unwrap())["compositionString"], "n");
         assert_eq!(parse(&hub.request(2, &req(1, N)).unwrap())["compositionString"], "n");
         assert_eq!(parse(&hub.request(1, &req(2, I)).unwrap())["compositionString"], "ni");
@@ -144,20 +160,34 @@ mod tests {
     #[test]
     fn 断开即结束会话_同编号重连从空开始() {
         let mut hub = Hub::new(Ime::with_engine(engine()));
+        hub.open(1, "Weixin.exe".into());
         hub.request(1, &req(1, N)).unwrap();
         hub.close(1);
         assert_eq!(hub.session_count(), 0);
+        hub.open(1, "Weixin.exe".into());
         assert_eq!(parse(&hub.request(1, &req(2, N)).unwrap())["compositionString"], "n");
     }
 
     #[test]
     fn 回显序号_结尾换行可解析() {
         let mut hub = Hub::new(Ime::with_engine(engine()));
+        hub.open(1, "Weixin.exe".into());
         let mut body = req(42, N);
         body.push(b'\n');
         let r = parse(&hub.request(1, &body).unwrap());
         assert_eq!(r["seqNum"], 42);
         assert_eq!(r["success"], true);
+    }
+
+    #[test]
+    fn 按连接的程序名定默认中英_断开即忘记() {
+        let mut hub = Hub::new(Ime::with_engine(engine()));
+        hub.open(1, "notepad.exe".into());
+        assert_eq!(parse(&hub.request(1, &req(1, N)).unwrap())["return"], false);
+        hub.open(2, "WPS.exe".into());
+        assert_eq!(parse(&hub.request(2, &req(1, N)).unwrap())["compositionString"], "n");
+        hub.close(2);
+        assert_eq!(parse(&hub.request(2, &req(2, N)).unwrap())["return"], false); // 没有 Opened:按其他程序
     }
 
     #[test]

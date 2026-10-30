@@ -30,7 +30,9 @@ fn create_instance(name: &[u16], sec: &Security, first: bool) -> Option<Handle> 
 
 /// 一个连接的 I/O:读请求 → 交工作线程 → 写回复。对端断开、工作线程不回复(请求无法解析)或写失败即结束。
 fn serve(h: Handle, conn: u64, tx: mpsc::Sender<Msg>) {
-    while let Some(body) = read_message(h) {
+    // 宿主程序名决定新会话默认中/英;取不到按其他程序(默认英文)
+    let opened = tx.send(Msg::Opened { conn, exe: client_exe(h).unwrap_or_default() }).is_ok();
+    while let Some(body) = opened.then(|| read_message(h)).flatten() {
         let (reply_tx, reply_rx) = mpsc::channel();
         if tx.send(Msg::Request { conn, body, reply: reply_tx }).is_err() {
             break;
