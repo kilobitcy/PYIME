@@ -1017,3 +1017,32 @@ fn 组字中重新加载后退格删光不撤回旧分段学习() {
     let exported = s.ime.user_export();
     assert!(exported.contains("ni\t你\t5"), "{exported}");
 }
+
+#[test]
+fn 新会话按程序决定默认中英() {
+    let mut s = Session::open(Ime::with_engine(engine()), "WeChat.exe");
+    assert_eq!(key(&mut s, "filterKeyDown", N)["return"], true);
+    let mut s = Session::open(Ime::with_engine(engine()), "notepad.exe");
+    assert_eq!(key(&mut s, "filterKeyDown", N)["return"], false);
+    let mut s = Session::open(Ime::with_engine(engine()), "");
+    assert_eq!(key(&mut s, "filterKeyDown", N)["return"], false);
+}
+
+#[test]
+fn init带回的中英状态覆盖程序默认() {
+    let mut s = Session::open(Ime::with_engine(engine()), "notepad.exe");
+    s.handle(&json!({"method": "init", "seqNum": 1, "isWindows8Above": true, "english": false}));
+    assert_eq!(key(&mut s, "filterKeyDown", N)["return"], true);
+    let mut s = Session::open(Ime::with_engine(engine()), "Weixin.exe");
+    s.handle(&json!({"method": "init", "seqNum": 1, "isWindows8Above": true, "english": true}));
+    assert_eq!(key(&mut s, "filterKeyDown", N)["return"], false);
+}
+
+#[test]
+fn 激活与切换的回复带中英状态() {
+    let mut s = win8_session();
+    let r = s.handle(&json!({"method": "onActivate", "seqNum": 2, "isKeyboardOpen": true}));
+    assert_eq!(r["english"], false);
+    assert_eq!(shift_click(&mut s)["english"], true);
+    assert_eq!(left_click(&mut s)["english"], false);
+}

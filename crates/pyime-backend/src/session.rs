@@ -119,11 +119,19 @@ pub struct Session {
     caps_down: Option<i64>,
     /// 前端是 Win8 及以上(`init` 告知),托盘有输入法模式图标。
     win8: bool,
+    /// 宿主程序的 exe 文件名(取不到为空),托盘"本程序默认中文"用。
+    exe: String,
 }
 
 impl Session {
     pub fn new(ime: Rc<Ime>) -> Session {
-        Session { ime, pending: String::new(), input: String::new(), cands: Vec::new(), typed_all: String::new(), context: String::new(), segments: 0, page: 0, cursor: 0, english: false, shift_pending: false, shift_combo_up: None, shift_misfire: false, shift_guard: SHIFT_GUARD, learned: Vec::new(), last: None, after_digit: false, quote_open: [false; 2], closers: Vec::new(), injected: None, inject_echo: INJECT_ECHO, back_counted: None, peak: None, deleting: false, caps: String::new(), caps_down: None, win8: false }
+        Session { ime, pending: String::new(), input: String::new(), cands: Vec::new(), typed_all: String::new(), context: String::new(), segments: 0, page: 0, cursor: 0, english: false, shift_pending: false, shift_combo_up: None, shift_misfire: false, shift_guard: SHIFT_GUARD, learned: Vec::new(), last: None, after_digit: false, quote_open: [false; 2], closers: Vec::new(), injected: None, inject_echo: INJECT_ECHO, back_counted: None, peak: None, deleting: false, caps: String::new(), caps_down: None, win8: false, exe: String::new() }
+    }
+
+    /// 新连接的会话:宿主 `exe` 在 `chinese-apps.txt` 里则默认中文,否则默认英文。
+    pub fn open(ime: Rc<Ime>, exe: &str) -> Session {
+        let english = !ime.is_chinese_app(exe);
+        Session { exe: exe.to_string(), english, ..Session::new(ime) }
     }
 
     fn composing(&self) -> bool {
@@ -212,8 +220,17 @@ impl Session {
                 resp["showCandidates"] = json!(false);
             }
             // 模式图标只在 onActivate 加:init 也加会在 TSF 里留下一个删不掉的重复按钮
-            "init" => self.win8 = req["isWindows8Above"] == true,
-            "onActivate" if self.win8 => resp["addButton"] = json!([tray::mode_button(self.english)]),
+            "init" => {
+                self.win8 = req["isWindows8Above"] == true;
+                // worker 重启后重连:DLL 带回断线前的中/英状态
+                if let Some(english) = req["english"].as_bool() {
+                    self.english = english;
+                }
+            }
+            "onActivate" if self.win8 => {
+                resp["addButton"] = json!([tray::mode_button(self.english)]);
+                resp["english"] = json!(self.english);
+            }
             "onDeactivate" if self.win8 => resp["removeButton"] = json!([tray::MODE_ICON]),
             "onMenu" if req["id"] == tray::MODE_ICON => resp["return"] = tray::menu(self.ime.user_file_changed(), &self.ime.fuzzy()),
             "onCommand" => self.on_command(req, &mut resp),
@@ -234,6 +251,8 @@ impl Session {
         }
         if self.win8 {
             resp["changeButton"] = json!([tray::mode_change(self.english)]);
+            // DLL 记住它,重连时经 init 带回
+            resp["english"] = json!(self.english);
         }
     }
 
