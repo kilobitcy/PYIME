@@ -1,5 +1,6 @@
 // GUI 子系统:由监护进程/Run 键启动时不弹控制台窗。
 #![cfg_attr(windows, windows_subsystem = "windows")]
+mod apps;
 #[cfg_attr(not(windows), allow(dead_code))] // 只被 Windows 的 pipe.rs 使用;纯逻辑在 Linux 上单测
 mod hub;
 #[cfg_attr(not(windows), allow(dead_code))] // 加载入口只被 Windows 的 pipe.rs 调用
