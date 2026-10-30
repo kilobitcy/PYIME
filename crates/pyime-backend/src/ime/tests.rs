@@ -121,3 +121,58 @@ fn 原子写可新建文件() {
     write_atomic(&p, b"ni\t\xe4\xbd\xa0\t1").unwrap();
     assert_eq!(std::fs::read_to_string(&p).unwrap(), "ni\t你\t1");
 }
+
+fn apps_file(p: &Path) -> PathBuf {
+    p.with_file_name("chinese-apps.txt")
+}
+
+#[test]
+fn 默认中文列表_文件不存在时写入初始列表() {
+    let p = temp_user_path("apps-init");
+    let ime = Ime::with_user_path(engine(), p.clone());
+    assert_eq!(std::fs::read_to_string(apps_file(&p)).unwrap(), "Weixin.exe\nWeChat.exe\nwps.exe\net.exe\nwpp.exe\n");
+    assert!(ime.is_chinese_app("weixin.exe"));
+    assert!(!ime.is_chinese_app("notepad.exe"));
+}
+
+#[test]
+fn 默认中文列表_空文件不重写() {
+    let p = temp_user_path("apps-empty");
+    std::fs::write(apps_file(&p), "").unwrap();
+    let ime = Ime::with_user_path(engine(), p.clone());
+    assert_eq!(std::fs::read_to_string(apps_file(&p)).unwrap(), "");
+    assert!(!ime.is_chinese_app("Weixin.exe"));
+}
+
+#[test]
+fn 默认中文列表_勾选加入与移除并写盘() {
+    let p = temp_user_path("apps-toggle");
+    std::fs::write(apps_file(&p), "Weixin.exe\r\n").unwrap();
+    let ime = Ime::with_user_path(engine(), p.clone());
+    assert!(ime.toggle_chinese_app("Notepad.exe"));
+    assert_eq!(std::fs::read_to_string(apps_file(&p)).unwrap(), "Weixin.exe\nNotepad.exe\n");
+    assert!(ime.is_chinese_app("notepad.exe"));
+    assert!(!ime.toggle_chinese_app("notepad.exe"));
+    assert_eq!(std::fs::read_to_string(apps_file(&p)).unwrap(), "Weixin.exe\n");
+    assert!(!ime.toggle_chinese_app("")); // 空名不处理
+    assert_eq!(std::fs::read_to_string(apps_file(&p)).unwrap(), "Weixin.exe\n");
+}
+
+#[test]
+fn 默认中文列表_非utf8按空列表且不覆盖() {
+    let p = temp_user_path("apps-badutf8");
+    std::fs::write(apps_file(&p), b"Weixin.exe\n\xc4\xe3").unwrap();
+    let ime = Ime::with_user_path(engine(), p.clone());
+    assert!(!ime.is_chinese_app("Weixin.exe"));
+    assert!(ime.toggle_chinese_app("notepad.exe")); // 只改内存
+    assert!(ime.is_chinese_app("notepad.exe"));
+    assert_eq!(std::fs::read(apps_file(&p)).unwrap(), b"Weixin.exe\n\xc4\xe3");
+}
+
+#[test]
+fn 默认中文列表_无数据目录时用内存初始列表() {
+    let ime = Ime::with_engine(engine());
+    assert!(ime.is_chinese_app("WPS.EXE"));
+    assert!(ime.toggle_chinese_app("notepad.exe"));
+    assert!(ime.is_chinese_app("notepad.exe"));
+}

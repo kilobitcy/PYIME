@@ -1,4 +1,5 @@
 //! 全进程共享的输入法状态:引擎(含词典与用户学习数据)及用户数据存盘。
+use crate::apps::ChineseApps;
 use crate::log;
 use pyime_engine::dict::{Dict, DictBuilder};
 use pyime_engine::english::{parse_compiled, parse_list, English, TIER_CUSTOM};
@@ -23,6 +24,11 @@ pub struct Ime {
     skip_logged: Cell<bool>,
     /// 用户数据代际号,每次重新加载成功 +1;会话据此丢弃重载前的撤销记录。
     generation: Cell<u32>,
+    /// 默认中文的程序列表(`chinese-apps.txt`);`apps_path` 为 None 时只在内存。
+    apps: RefCell<ChineseApps>,
+    apps_path: Option<PathBuf>,
+    /// 启动时文件读不出(如非 UTF-8):勾选只改内存,不覆盖用户的文件。
+    apps_writable: Cell<bool>,
     /// 测试用:记录"启动外部程序"而不真的启动。
     #[cfg(test)]
     launched: RefCell<Vec<String>>,
@@ -135,6 +141,44 @@ fn fuzzy_path(user: Option<&Path>) -> Option<PathBuf> {
     user.map(|p| p.with_file_name("fuzzy.txt"))
 }
 
+/// 默认中文程序列表 `chinese-apps.txt`:与 `user.txt` 同目录。
+fn apps_path(user: Option<&Path>) -> Option<PathBuf> {
+    user.map(|p| p.with_file_name("chinese-apps.txt"))
+}
+
+/// 读入默认中文程序列表,返回 (列表, 能否写回)。文件不存在时写入初始列表;
+/// 读不出(非 UTF-8 等)按空列表处理且不写回;没有数据目录时用内存初始列表。
+fn read_apps(path: Option<&Path>) -> (ChineseApps, bool) {
+    let Some(p) = path else { return (ChineseApps::defaults(), true) };
+    match std::fs::read(p) {
+        Ok(b) => match String::from_utf8(b) {
+            Ok(t) => (ChineseApps::parse(&t), true),
+            Err(_) => {
+                log::line(&format!("{p:?} 不是 UTF-8,按空列表处理且不写回"));
+                (ChineseApps::parse(""), false)
+            }
+        },
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            let apps = ChineseApps::defaults();
+            write_apps(p, &apps);
+            (apps, true)
+        }
+        Err(e) => {
+            log::line(&format!("读取 {p:?} 失败,按空列表处理且不写回: {e}"));
+            (ChineseApps::parse(""), false)
+        }
+    }
+}
+
+fn write_apps(p: &Path, apps: &ChineseApps) {
+    if let Some(dir) = p.parent() {
+        let _ = std::fs::create_dir_all(dir);
+    }
+    if let Err(e) = write_atomic(p, apps.export().as_bytes()) {
+        log::line(&format!("写入 {p:?} 失败: {e}"));
+    }
+}
+
 /// 读入模糊音开关;文件不存在时全开。
 fn read_fuzzy(engine: &mut Engine, user: Option<&Path>) {
     if let Some(t) = fuzzy_path(user).and_then(|p| read_optional(&p)) {
@@ -181,6 +225,8 @@ fn load_dict() -> Dict {
 
 impl Ime {
     fn build(engine: Engine, user_path: Option<PathBuf>, en_learned_path: Option<PathBuf>, user_stamp: Option<(SystemTime, u64)>) -> Rc<Ime> {
+        let apps_path = apps_path(user_path.as_deref());
+        let (apps, apps_writable) = read_apps(apps_path.as_deref());
         Rc::new(Ime {
             engine: RefCell::new(engine),
             user_path,
@@ -188,6 +234,9 @@ impl Ime {
             user_stamp: Cell::new(user_stamp),
             skip_logged: Cell::new(false),
             generation: Cell::new(0),
+            apps: RefCell::new(apps),
+            apps_path,
+            apps_writable: Cell::new(apps_writable),
             #[cfg(test)]
             pressed: RefCell::new(Vec::new()),
             #[cfg(test)]
@@ -304,6 +353,26 @@ impl Ime {
         if let Err(e) = std::fs::write(&path, text) {
             crate::log::line(&format!("写入 {path:?} 失败: {e}"));
         }
+    }
+
+    /// 程序 `exe` 是否默认中文。
+    pub fn is_chinese_app(&self, exe: &str) -> bool {
+        self.apps.borrow().contains(exe)
+    }
+
+    /// 菜单"本程序默认中文":切换 `exe` 是否在表并写 `chinese-apps.txt`;返回切换后是否在表。空名不处理。
+    pub fn toggle_chinese_app(&self, exe: &str) -> bool {
+        if exe.is_empty() {
+            return false;
+        }
+        let on = self.apps.borrow_mut().toggle(exe);
+        log::line(&format!("菜单:本程序默认中文 {exe} {}", if on { "加入" } else { "移除" }));
+        match &self.apps_path {
+            Some(p) if self.apps_writable.get() => write_apps(p, &self.apps.borrow()),
+            Some(p) => log::line(&format!("{p:?} 启动时读不出,只改内存不写回")),
+            None => {}
+        }
+        on
     }
 
     /// 菜单"打开数据目录":目录不存在先建(从未选过词时还没有),再用资源管理器打开。
