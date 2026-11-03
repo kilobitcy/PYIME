@@ -7,22 +7,27 @@ const INITIALS: [(&str, &str); 5] = [("z", "zh"), ("c", "ch"), ("s", "sh"), ("n"
 /// 韵母对。
 const FINALS: [(&str, &str); 5] = [("an", "ang"), ("en", "eng"), ("in", "ing"), ("on", "ong"), ("uan", "uang")];
 
+/// `fuzzy.txt` 中表示关闭按键纠错的行。
+pub const TYPO_OFF: &str = "纠错";
+
 #[derive(Debug, Clone)]
 pub struct FuzzyConfig {
     pub initials: [bool; 5],
     pub finals: [bool; 5],
+    /// 按键纠错:输入没有精确整段词时查"只改一处"的整段词(见 `typo.rs`),默认开。
+    pub typo: bool,
 }
 
 impl Default for FuzzyConfig {
-    /// 默认十对全开。
+    /// 默认十对全开,按键纠错开。
     fn default() -> Self {
-        FuzzyConfig { initials: [true; 5], finals: [true; 5] }
+        FuzzyConfig { initials: [true; 5], finals: [true; 5], typo: true }
     }
 }
 
 impl FuzzyConfig {
     pub fn none() -> Self {
-        FuzzyConfig { initials: [false; 5], finals: [false; 5] }
+        FuzzyConfig { initials: [false; 5], finals: [false; 5], typo: false }
     }
 
     /// 十对规则的名字(如 `z=zh`),下标即规则位:声母 0–4,韵母 5–9。
@@ -38,21 +43,29 @@ impl FuzzyConfig {
         if i < 5 { self.initials[i] = on } else { self.finals[i - 5] = on }
     }
 
-    /// 读配置文本:每行一个关闭的规则名,其余规则开;不认识的行忽略。
+    /// 读配置文本:每行一个关闭的规则名(或 `纠错`),其余开;不认识的行忽略。
     pub fn parse_off(text: &str) -> Self {
         let names = Self::rule_names();
         let mut cfg = Self::default();
         for line in text.trim_start_matches('\u{feff}').lines() {
-            if let Some(i) = names.iter().position(|n| n == line.trim()) {
+            let line = line.trim();
+            if line == TYPO_OFF {
+                cfg.typo = false;
+            } else if let Some(i) = names.iter().position(|n| n == line) {
                 cfg.set(i, false);
             }
         }
         cfg
     }
 
-    /// 写配置文本:关闭的规则名,每行一个;全开时为空。
+    /// 写配置文本:关闭的规则名,每行一个;关闭纠错时末尾加 `纠错` 行;全开时为空。
     pub fn export_off(&self) -> String {
-        Self::rule_names().into_iter().enumerate().filter(|&(i, _)| !self.is_on(i)).map(|(_, n)| n + "\n").collect()
+        let mut s: String = Self::rule_names().into_iter().enumerate().filter(|&(i, _)| !self.is_on(i)).map(|(_, n)| n + "\n").collect();
+        if !self.typo {
+            s.push_str(TYPO_OFF);
+            s.push('\n');
+        }
+        s
     }
 }
 
@@ -214,5 +227,17 @@ mod tests {
         assert!(variants("nue", &FuzzyConfig::default()).contains(&("lve".to_string(), 1, 1 << 3)));
         let got = partial("lu", &FuzzyConfig::none());
         assert!(got.contains(&("lve", 0, 0)) && !got.iter().any(|(t, _, _)| *t == "lue"));
+    }
+
+    #[test]
+    fn 纠错开关按名字读写() {
+        let mut cfg = FuzzyConfig::default();
+        assert!(cfg.typo && !FuzzyConfig::none().typo);
+        cfg.typo = false;
+        cfg.set(4, false);
+        assert_eq!(cfg.export_off(), "r=l\n纠错\n");
+        let back = FuzzyConfig::parse_off("\u{feff}纠错\r\nr=l\r\n");
+        assert!(!back.typo && !back.is_on(4) && back.is_on(3));
+        assert!(FuzzyConfig::parse_off("r=l\n").typo);
     }
 }
