@@ -1,6 +1,6 @@
 # 按键纠错(误按键)设计
 
-日期:2026-11-03 状态:已与用户确认设计;已按独立复核意见修订,待审阅
+日期:2026-11-03 状态:已与用户确认设计;已按独立复核意见与实测结果修订
 
 ## 背景与依据
 
@@ -49,9 +49,9 @@
 - `FuzzyConfig.typo` 为真;
 - `TYPO_MIN_LEN`(=4)≤ 输入长度 ≤ `TYPO_MAX_LEN`(=12;目标词 2–4 字,更长的输入几乎不可能整段成词,也限住每键开销);
 - `words` 中没有 `start == 0 && end == input.len() && !partial && fuzzy == 0` 的词(精确词与用户短语算;模糊整段词不算,因 `tuojian` 经 an=ang 有模糊整段词"脱缰"(词频 2810),若排除就救不了这个首要例子);
-- `cover(words, len) != Cover::Partial`(末尾残缺音节时不纠,免得 `tuij` 这类词中途闪出"突击",也护住 `yinp`、`kube` 等残缺回归用例)。
+- `cover(words, len) == Cover::Exact`,即输入能完整切成音节:末尾残缺(`tuij`,免得中途闪出"突击",也护住 `yinp`、`kube` 等残缺回归用例)与切不全的串(`mark`、`fable` 这类英文,回放中曾冒出"马力""发布了")都不纠。
 
-对每个变体,从 0 沿切分格收"吃满整段、音节完整(非残缺)"的词(复用 `grow`,可叠加已开启的模糊音),过滤:至少 2 个字;在该拼音键前 `PER_KEY` 个以内(沿用 `top_entries`)。
+对每个变体,先算"第 i 位起的后缀能否切成完整音节"(`tails`),切不成的变体跳过;其余以 `grow` 的吃满整段模式(参数 `tail`)从 0 只沿能切到末尾的分支走、只在末尾读词条,收"吃满整段、音节完整"的词(可叠加已开启的模糊音),过滤:至少 2 个字;在该拼音键前 `PER_KEY` 个以内(沿用 `top_entries`)。
 
 得分:直接用 `grow` 产出的 `Word.score`(已含词频、模糊惩罚、个人模糊折扣、抢音惩罚、以纠正后拼音为键的个人加分),纠错分 = `Word.score − WORD_COST − TYPO_PENALTY`。
 
@@ -65,7 +65,7 @@
 - 新增 `fixed: Option<String>`:纠正后的拼音,其余来源为 `None`(`engine.rs` 现有四处 `Candidate` 字面量一并补上);
 - `consumed = input.len()`,`cuts`、`parts` 为空(组字串原样显示用户键入,同用户短语);`fuzzy`/`pairs` 取纠正后匹配的模糊信息。
 
-新增常量:`TYPO_PENALTY`(具体值以回归用例定)、`TYPO_MAX = 2`、`TYPO_MIN_LEN = 4`、`TYPO_MAX_LEN = 12`。
+新增常量:`TYPO_PENALTY = 5.0`(回归与日志回放定,见下)、`TYPO_MAX = 2`、`TYPO_MIN_LEN = 4`、`TYPO_MAX_LEN = 12`。
 
 ### 3. 学习与日志:`crates/pyime-backend/src/session.rs` `select`
 
@@ -84,17 +84,18 @@
 单测:
 
 - `typo.rs`:四类改法各一例(`tuojian`→含 `tuijian`;`thuijian`→含 `tuijian`;`nie`→含 `nei`;`xiachenxu`→含 `xiaochenxu`),结果不含原串、无重复。
-- 引擎:`tuojian` 第 2 位为"推荐"、来源 `Typo`、`fixed == "tuijian"`;有整段词(`gongkao`)时不触发;末尾残缺(`tuij`)不触发;`typo` 关时不触发;单字不出;短于 4 或长于 12 不触发;最佳整句分高于纠错分时不出;无候选时不插。
+- 引擎:`tuojian` 第 2 位为"推荐"、来源 `Typo`、`fixed == "tuijian"`;有整段词(`gongkao`)时不触发;末尾残缺(`tuij`)与切不全(`tuijain`)不触发;`typo` 关时不触发;单字不出;短于 4 或长于 12 不触发;最佳整句分高于纠错分时不出;无候选时不插。
 - `FuzzyConfig`:`纠错` 行的读写。
 - 会话:选中纠错候选后按 `tuijian` 学习、撤回后恢复;分段(先选前缀词再选纠错词)不做整句学习;inputlog 带 `fixed`;托盘 `CMD_TYPO` 切换并写 `fuzzy.txt`。
 
 回归:
 
 - 改前 `PYIME_RANKS_OUT=/tmp/base.tsv` 存逐例名次,改后 `PYIME_RANKS_BASE=/tmp/base.tsv` 比对;原有用例名次不应变化,`TYPO_PENALTY` 在此约束下取能让新用例通过的值。
-- 新增用例:`kailv`→考虑、`xiachenxu`→小程序、`tuojian`→推荐,期望名次 2。
+- 新增用例:`kailv`→考虑、`tuojian`→推荐,期望名次 2。`xiachenxu`→小程序 不收:它高出门槛仅 1.42,要出须惩罚 < 1.42,而护住原有用例须 ≥ 3.35(`nengjiansao`→能捡到 3.35、`zaizhuijia`→在回家 2.06)。
+- 取值依据:3.5 起原有用例名次与基线一致;日志回放中 3.5 时有 3 次把所选整句挤后 1 位(先不做/先不说 高出 3.78、获取它/或其他 4.00、本目录/根目录 4.72),目标例高出 9 以上(推荐 9.03、考虑 9.42),故取 5.0。5.0 时回放触发 2 次,只挤动 1 次(`kailv` 当时选"开女",实为误按)。
 - 实测依据(installer/pyime.dict):推荐 501446、考虑 500740、小程序 13470;脱缰 2810;`kailv`、`binglupan` 无整段词。
 - 另用 0.1.17 日志全部上屏输入回放,统计触发次数与"触发但所选不是纠错词"的次数,作为误伤参考。
 
-性能:用 `real_engine` 实测触发路径(取 12 字母输入),目标比当前多出 ≤ 5ms;超出则收窄插入字母集或替换邻键范围。
+性能:用 `real_engine` 实测触发路径,目标比当前多出 ≤ 5ms。每个变体完整跑 `grow` 时 `xiachenxu` 多 10.4ms;改为上述吃满整段模式后 `tuojian` +1ms、`kailv` +0.5ms、`xiachenxu` +3ms。
 
 实机:装包后在记事本打 `tuojian`、`kailv`,确认第 2 位出现正确词;托盘关闭"按键纠错"后不再出现。

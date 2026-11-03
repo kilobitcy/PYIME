@@ -51,7 +51,7 @@ const EN_EXACT_MIN: usize = 4;
 /// 每个宿主候选后至多附加几个符号。
 const SYMBOLS_PER_WORD: usize = 2;
 /// 按键纠错:纠错词在整段词口径得分上的额外惩罚;须高于现有最佳整段词与最佳整句才出。
-const TYPO_PENALTY: f64 = 3.0;
+const TYPO_PENALTY: f64 = 5.0;
 /// 纠错候选至多几个。
 const TYPO_MAX: usize = 2;
 /// 触发纠错的输入长度范围(字节)。
@@ -340,10 +340,16 @@ impl Engine {
     }
 
     /// 收集从 `pos` 出发的所有词(沿切分格深搜,词典前缀不存在即剪枝)。
-    fn grow(&self, input: &str, start: usize, pos: usize, key: &str, acc: Acc, depth: usize, cuts: &mut Vec<usize>, out: &mut Vec<Word>) {
-        self.grow_partial(input, start, pos, key, acc, cuts, out);
+    /// `tail` 为 `Some` 时只收吃满输入的完整词(按键纠错用):`tail[i]` 表示 `input[i..]` 能切成完整音节,切不下去的分支不走,中途不读词条。
+    fn grow(&self, input: &str, start: usize, pos: usize, key: &str, acc: Acc, depth: usize, cuts: &mut Vec<usize>, tail: Option<&[bool]>, out: &mut Vec<Word>) {
+        if tail.is_none() {
+            self.grow_partial(input, start, pos, key, acc, cuts, out);
+        }
         for syl in spellings_at(input, pos, &self.cfg) {
             let end = pos + syl.len();
+            if tail.is_some_and(|t| !t[end]) {
+                continue;
+            }
             for (v, c, m) in variants(syl, &self.cfg) {
                 // 只有模糊后才合法的写法(zhon),原样不是音节,只走模糊变体
                 if c == 0 && !is_syllable(&v) {
@@ -355,7 +361,8 @@ impl Engine {
                 }
                 let mut a = self.step(acc, c, m);
                 a.splits += u8::from(depth > 0 && steals(input, acc.prev, pos, false));
-                for e in self.top_entries(&next) {
+                let entries = if tail.is_some() && end < input.len() { Vec::new() } else { self.top_entries(&next) };
+                for e in entries {
                     let bonus = self.user.bonus(&input[start..end], &e.word);
                     let learned = a.fuzzy > 0 && self.user.chose(&input[start..end], &e.word);
                     let score = f64::from(e.weight.max(1)).ln() - self.penalty(depth == 0) * f64::from(a.fuzzy) + a.discount - SPLIT_PENALTY * f64::from(a.splits) + bonus - if depth == 0 { SINGLE_CHAR_DISCOUNT } else { 0.0 };
@@ -363,7 +370,7 @@ impl Engine {
                 }
                 if depth + 1 < MAX_SYLLABLES {
                     cuts.push(end);
-                    self.grow(input, start, end, &next, Acc { prev: pos, ..a }, depth + 1, cuts, out);
+                    self.grow(input, start, end, &next, Acc { prev: pos, ..a }, depth + 1, cuts, tail, out);
                     cuts.pop();
                 }
             }
@@ -409,7 +416,7 @@ impl Engine {
             for s in spellings_at(input, a, &self.cfg) {
                 reach[a + s.len()] = true;
             }
-            self.grow(input, a, a, "", Acc { prev: a, ..Acc::default() }, 0, &mut Vec::new(), &mut words);
+            self.grow(input, a, a, "", Acc { prev: a, ..Acc::default() }, 0, &mut Vec::new(), None, &mut words);
         }
         for (typed, text, bonus) in self.user.matching(input) {
             if !words.iter().any(|w| w.start == 0 && w.end == typed.len() && w.text == text) {
@@ -467,7 +474,8 @@ impl Engine {
     /// 得分(整段词口径再减 `TYPO_PENALTY`)须高于现有最佳整段词与最佳整句,至多 `TYPO_MAX` 个,跳过已在 `existing` 中的。
     fn typo(&self, input: &str, words: &[Word], best_sentence: Option<f64>, existing: &[Candidate]) -> Vec<Candidate> {
         let len = input.len();
-        if !self.cfg.typo || !(TYPO_MIN_LEN..=TYPO_MAX_LEN).contains(&len) || cover(words, len) == Cover::Partial {
+        // 只纠能完整切成音节的输入:残缺(tuij)和切不全的串(mark、fable 这类英文)都不纠
+        if !self.cfg.typo || !(TYPO_MIN_LEN..=TYPO_MAX_LEN).contains(&len) || cover(words, len) != Cover::Exact {
             return Vec::new();
         }
         let whole: Vec<&Word> = words.iter().filter(|w| w.start == 0 && w.end == len && !w.partial).collect();
@@ -477,9 +485,14 @@ impl Engine {
         let bar = whole.iter().map(|w| w.score - WORD_COST).chain(best_sentence).fold(f64::MIN, f64::max);
         let mut found: Vec<(f64, Word, String)> = Vec::new();
         for fixed in edits(input) {
+            // 切不成完整音节的变体直接跳过;其余只沿能切到末尾的分支收吃满整段的词
+            let tail = self.tails(&fixed);
+            if !tail[0] {
+                continue;
+            }
             let mut ws = Vec::new();
-            self.grow(&fixed, 0, 0, "", Acc::default(), 0, &mut Vec::new(), &mut ws);
-            for w in ws.into_iter().filter(|w| w.end == fixed.len() && !w.partial && w.text.chars().count() >= 2) {
+            self.grow(&fixed, 0, 0, "", Acc::default(), 0, &mut Vec::new(), Some(&tail), &mut ws);
+            for w in ws.into_iter().filter(|w| w.text.chars().count() >= 2) {
                 let score = w.score - WORD_COST - TYPO_PENALTY;
                 if score > bar {
                     found.push((score, w, fixed.clone()));
@@ -498,6 +511,16 @@ impl Engine {
             out.push(Candidate { text: w.text, consumed: len, fuzzy: w.fuzzy, pairs: w.pairs, cuts: Vec::new(), parts: Vec::new(), source: Source::Typo, fixed: Some(fixed) });
         }
         out
+    }
+
+    /// 第 i 项:`input[i..]` 能否切成完整音节(含模糊后才合法的写法,与 `grow` 一致);末项为真。
+    fn tails(&self, input: &str) -> Vec<bool> {
+        let mut tail = vec![false; input.len() + 1];
+        tail[input.len()] = true;
+        for a in (0..input.len()).rev() {
+            tail[a] = spellings_at(input, a, &self.cfg).iter().any(|s| tail[a + s.len()]);
+        }
+        tail
     }
 }
 
@@ -1232,9 +1255,15 @@ mod tests {
 
     #[test]
     fn 不纠单字() {
-        // zhusng 的变体 zhuang 命中单字 庄,不应出
-        let e = engine(&[("zhu", "猪", 8000), ("zhuang", "庄", 900_000)]);
-        assert!(!texts(&e, "zhusng").contains(&"庄".to_string()));
+        // zhuoang 能切成 zhuo ang;删掉 o 得 zhuang,命中单字 庄,不应出
+        let e = engine(&[("zhuo", "桌", 8000), ("ang", "昂", 8000), ("zhuang", "庄", 900_000)]);
+        assert!(!texts(&e, "zhuoang").contains(&"庄".to_string()));
+    }
+
+    #[test]
+    fn 切不全的输入不纠() {
+        // tuijain 切不成完整音节(英文串多是这样),对调 ai 可得 tuijian,也不纠
+        assert!(!has_typo(&typo_engine(&[("tui", "推", 8000)]), "tuijain"));
     }
 
     #[test]
