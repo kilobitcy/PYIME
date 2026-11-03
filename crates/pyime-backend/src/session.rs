@@ -82,6 +82,8 @@ pub struct Session {
     /// 刚上屏文字的末尾几个字,作为下一次组词的上文(搭配加分用)。
     context: String,
     segments: usize,
+    /// 本次组词已有一段选的是按键纠错候选:整串拼音含错拼,组词结束时不学整句。
+    typo_seg: bool,
     page: usize,
     /// 页内高亮下标。
     cursor: usize,
@@ -125,7 +127,7 @@ pub struct Session {
 
 impl Session {
     pub fn new(ime: Rc<Ime>) -> Session {
-        Session { ime, pending: String::new(), input: String::new(), cands: Vec::new(), typed_all: String::new(), context: String::new(), segments: 0, page: 0, cursor: 0, english: false, shift_pending: false, shift_combo_up: None, shift_misfire: false, shift_guard: SHIFT_GUARD, learned: Vec::new(), last: None, after_digit: false, quote_open: [false; 2], closers: Vec::new(), injected: None, inject_echo: INJECT_ECHO, back_counted: None, peak: None, deleting: false, caps: String::new(), caps_down: None, win8: false, exe: String::new() }
+        Session { ime, pending: String::new(), input: String::new(), cands: Vec::new(), typed_all: String::new(), context: String::new(), segments: 0, typo_seg: false, page: 0, cursor: 0, english: false, shift_pending: false, shift_combo_up: None, shift_misfire: false, shift_guard: SHIFT_GUARD, learned: Vec::new(), last: None, after_digit: false, quote_open: [false; 2], closers: Vec::new(), injected: None, inject_echo: INJECT_ECHO, back_counted: None, peak: None, deleting: false, caps: String::new(), caps_down: None, win8: false, exe: String::new() }
     }
 
     /// 新连接的会话:宿主 `exe` 在 `chinese-apps.txt` 里则默认中文,否则默认英文。
@@ -444,14 +446,17 @@ impl Session {
         let (input, ctx) = (self.input.clone(), self.prev());
         let index = self.page * PAGE_SIZE + idx;
         let typed: String = self.input.drain(..c.consumed).collect();
-        crate::inputlog::select(&input, &ctx, &typed, &c.text, index, &tops);
+        crate::inputlog::select(&input, &ctx, &typed, &c.text, index, &tops, c.fixed.as_deref());
         // 符号不学习;它吃满剩余输入,必是本次组词的最后一段
         let symbol = c.source == Source::Symbol;
         if !symbol {
-            let lessons = c.lessons(&typed, &ctx);
-            self.ime.learn(&typed, &c.text, c.pairs, &ctx, &lessons);
-            self.learned.push((typed.clone(), c.text.clone(), c.pairs, ctx, lessons));
+            // 按键纠错候选按纠正后的拼音学,user.txt 不留错拼
+            let learn_as = c.fixed.clone().unwrap_or_else(|| typed.clone());
+            let lessons = c.lessons(&learn_as, &ctx);
+            self.ime.learn(&learn_as, &c.text, c.pairs, &ctx, &lessons);
+            self.learned.push((learn_as, c.text.clone(), c.pairs, ctx, lessons));
         }
+        self.typo_seg |= c.fixed.is_some();
         self.pending.push_str(&c.text);
         self.typed_all.push_str(&typed);
         self.segments += 1;
@@ -459,13 +464,14 @@ impl Session {
             self.cands.clear();
             self.peak = None;
             let text = std::mem::take(&mut self.pending);
-            if self.segments > 1 && !symbol {
+            if self.segments > 1 && !symbol && !self.typo_seg {
                 self.ime.learn(&self.typed_all, &text, 0, "", &[]); // 分段选完的整句也学
                 self.learned.push((self.typed_all.clone(), text.clone(), 0, String::new(), Vec::new()));
             }
             let typed_all = std::mem::take(&mut self.typed_all);
             self.finish_commit(typed_all, &text);
             self.segments = 0;
+            self.typo_seg = false;
             // 以符号结尾时不留上文,免得记下以符号为上文的搭配
             self.context = if symbol { String::new() } else { tail3(&format!("{}{}", self.context, text)) };
             return Some(text);
@@ -505,6 +511,7 @@ impl Session {
         self.learned.clear();
         self.last = None;
         self.segments = 0;
+        self.typo_seg = false;
         self.context.clear();
         self.peak = None;
         text

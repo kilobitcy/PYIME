@@ -40,10 +40,15 @@ fn write(mut line: Value) {
     }
 }
 
-/// 一次选词:`input` 为选词时的完整拼音串,`typed` 为本次消耗的部分,`index` 为选中项在全部候选中的下标。
-pub fn select(input: &str, context: &str, typed: &str, text: &str, index: usize, top: &[&str]) {
+/// 一次选词:`input` 为选词时的完整拼音串,`typed` 为本次消耗的部分,`index` 为选中项在全部候选中的下标;
+/// `fixed` 为按键纠错候选纠正后的拼音(学习按它记),其余为 `None` 且不写该字段。
+pub fn select(input: &str, context: &str, typed: &str, text: &str, index: usize, top: &[&str], fixed: Option<&str>) {
     let top: Vec<&str> = top.iter().take(TOP).copied().collect();
-    write(json!({ "input": input, "context": context, "typed": typed, "text": text, "index": index, "top": top }));
+    let mut line = json!({ "input": input, "context": context, "typed": typed, "text": text, "index": index, "top": top });
+    if let Some(f) = fixed {
+        line["fixed"] = json!(f);
+    }
+    write(line);
 }
 
 /// 撤销一次组词的学习:`items` 为 (typed, text, pairs, prev)。
@@ -89,7 +94,7 @@ mod tests {
     #[test]
     fn 每行带版本与时间戳() {
         take_captured();
-        select("nihao", "", "nihao", "你好", 0, &["你好", "你", "泥", "尼", "拟", "逆"]);
+        select("nihao", "", "nihao", "你好", 0, &["你好", "你", "泥", "尼", "拟", "逆"], None);
         let lines = take_captured();
         assert_eq!(lines.len(), 1);
         assert_eq!(lines[0]["v"], env!("CARGO_PKG_VERSION"));

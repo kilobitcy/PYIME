@@ -1118,3 +1118,56 @@ fn 本程序默认中文_取不到程序名时置灰且不处理() {
     assert_eq!(item["enabled"], false);
     assert_eq!(menu_cmd(&mut s, tray::CMD_CHINESE_APP)["return"], false);
 }
+
+fn typo_session() -> Session {
+    let mut b = DictBuilder::default();
+    b.add("tuo", "拖", 8000);
+    b.add("jian", "见", 8000);
+    b.add("tui jian", "推荐", 50000);
+    b.add("wo men", "我们", 50000);
+    Session::new(Ime::with_engine(Engine::new(Dict::from_bytes(b.build().unwrap()).unwrap(), FuzzyConfig::default())))
+}
+
+/// tuojian 的键码。
+const TUOJIAN: [i64; 7] = [84, 85, O, 74, I, A, N];
+
+#[test]
+fn 纠错候选按正确拼音学习_日志记实际键入与纠正() {
+    let mut s = typo_session();
+    crate::inputlog::take_captured();
+    let r = press(&mut s, &TUOJIAN);
+    assert_eq!(r["candidateList"][1], "推荐");
+    key(&mut s, "onKeyDown", 50); // 数字 2
+    let u = s.ime.user_export();
+    assert!(u.contains("tuijian\t推荐\t1") && !u.contains("tuojian"), "{u}");
+    let sel = crate::inputlog::take_captured().into_iter().find(|l| l["text"] == "推荐").unwrap();
+    assert_eq!((sel["typed"].as_str(), sel["fixed"].as_str()), (Some("tuojian"), Some("tuijian")));
+    // 退格删光即撤回
+    backs(&mut s, 2);
+    assert!(!s.ime.user_export().contains("tuijian\t推荐"), "{}", s.ime.user_export());
+}
+
+#[test]
+fn 非纠错选词日志不带_fixed() {
+    let mut s = session();
+    crate::inputlog::take_captured();
+    type_pick(&mut s, &[N, I, H, A, O], "你好");
+    let sel = crate::inputlog::take_captured().into_iter().find(|l| l["text"] == "你好").unwrap();
+    assert!(sel.get("fixed").is_none());
+}
+
+#[test]
+fn 含纠错段的分段组词不学整句() {
+    const M: i64 = 77;
+    const E: i64 = 69;
+    let mut s = typo_session();
+    let mut keys = vec![W, O, M, E, N];
+    keys.extend_from_slice(&TUOJIAN);
+    let r = press(&mut s, &keys);
+    let pos = r["candidateList"].as_array().unwrap().iter().position(|c| c == "我们").unwrap();
+    let r = key(&mut s, "onKeyDown", 49 + pos as i64);
+    assert_eq!(r["candidateList"][1], "推荐");
+    key(&mut s, "onKeyDown", 50);
+    let u = s.ime.user_export();
+    assert!(u.contains("tuijian\t推荐\t1") && !u.contains("tuojian"), "{u}");
+}

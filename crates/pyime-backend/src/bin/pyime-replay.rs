@@ -80,6 +80,8 @@ fn main() -> Result<(), String> {
         }
         let (Some(input), Some(typed), Some(chosen)) = (v["input"].as_str(), v["typed"].as_str(), v["text"].as_str()) else { continue };
         let ctx = v["context"].as_str().unwrap_or("");
+        // 按键纠错的选择,会话按纠正后的拼音学习,回放保持一致(retract 项里记的也是它)
+        let learn_as = v["fixed"].as_str().unwrap_or(typed);
         episodes.select(&engine, input, typed, chosen, ctx, ts);
         let cands = engine.candidates_after(input, ctx);
         let rank = cands.iter().position(|c| c.text == chosen);
@@ -101,7 +103,7 @@ fn main() -> Result<(), String> {
                 }
             }
         }
-        engine.learn(typed, chosen);
+        engine.learn(learn_as, chosen);
         engine.learn_next(ctx, chosen);
         let lessons = match rank {
             Some(r) => {
@@ -111,7 +113,7 @@ fn main() -> Result<(), String> {
             None => Vec::new(),
         };
         engine.learn_lessons(&lessons);
-        taught.insert((typed.to_string(), chosen.to_string(), ctx.to_string()), lessons);
+        taught.insert((learn_as.to_string(), chosen.to_string(), ctx.to_string()), lessons);
     }
     let pct = |n: usize| if total == 0 { 0.0 } else { n as f64 * 100.0 / total as f64 };
     episodes.close();
