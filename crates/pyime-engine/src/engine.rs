@@ -1223,6 +1223,15 @@ mod tests {
     }
 
     #[test]
+    fn 模糊整段词得分更高时不纠() {
+        // nuojian 经 n=l 有模糊整段词 落见;i 误按为 u 时 nuojuan 可得 诺卷。落见 分低时出纠错,分高时不出
+        let base = [("nuo", "诺", 8000), ("jian", "见", 8000), ("nuo juan", "诺卷", 50000)];
+        let with = |n| engine(&[base.as_slice(), &[("luo jian", "落见", n)]].concat());
+        assert!(has_typo(&with(10), "nuojian"));
+        assert!(!has_typo(&with(5_000_000), "nuojian"));
+    }
+
+    #[test]
     fn 有精确整段词时不纠() {
         assert!(!has_typo(&typo_engine(&[("tuo jian", "拖建", 10)]), "tuojian"));
     }
@@ -1236,9 +1245,7 @@ mod tests {
     #[test]
     fn 开关关闭时不纠() {
         let mut e = typo_engine(&[]);
-        let mut cfg = FuzzyConfig::default();
-        cfg.typo = false;
-        e.set_fuzzy(cfg);
+        e.set_fuzzy(FuzzyConfig { typo: false, ..FuzzyConfig::default() });
         assert!(!has_typo(&e, "tuojian"));
     }
 

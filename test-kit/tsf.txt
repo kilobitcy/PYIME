@@ -39,6 +39,7 @@ user.txt 等用户数据全程不受影响。
 16. 记事本里右键托盘图标,勾"本程序默认中文(notepad.exe)":立即变中文;%LOCALAPPDATA%\PYIME\chinese-apps.txt 多出 notepad.exe;关掉记事本再开,默认中文。再取消勾选:立即变英文,文件里的 notepad.exe 消失。
 17. 记事本(默认英文)单击 Shift 切中文;任务管理器结束内存较大的 pyime-server.exe,等 5 秒;回记事本打 dui:候选正常出现(d 没丢),仍是中文,托盘只有一个图标且显示"中";%LOCALAPPDATA%\PYIME\tsf.log 有"已重连重发"。
 18. 平常使用中再遇到首字母丢失:记下大概时间,把 tsf.log 与 log.txt 对应时段贴回。
+
 九、按键纠错(0.1.18)
 19. 记事本(默认英文,先单击 Shift 切到中文)打 tuojian:第 2 位出现"推荐";按 2 上屏。再打 tuojian,"推荐"仍在第 2 位(学习记在 tuijian 下,不会变首选)。
 20. 打 kailv:第 2 位出现"考虑"。
