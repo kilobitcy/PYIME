@@ -304,6 +304,10 @@ impl Session {
                 self.ime.open_data_dir();
                 true
             }
+            (tray::CMD_TYPO, tray::COMMAND_MENU) => {
+                self.ime.toggle_typo();
+                true
+            }
             (id, tray::COMMAND_MENU) if (tray::CMD_FUZZY..tray::CMD_FUZZY + 10).contains(&id) => {
                 self.ime.toggle_fuzzy((id - tray::CMD_FUZZY) as usize);
                 true

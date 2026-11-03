@@ -345,9 +345,22 @@ impl Ime {
         let mut cfg = self.fuzzy();
         let on = !cfg.is_on(i);
         cfg.set(i, on);
+        crate::log::line(&format!("菜单:模糊音 {} {}", FuzzyConfig::rule_names()[i], if on { "开" } else { "关" }));
+        self.apply_fuzzy(cfg);
+    }
+
+    /// 菜单"按键纠错":切换开关,即时生效并写 `fuzzy.txt`。
+    pub fn toggle_typo(&self) {
+        let mut cfg = self.fuzzy();
+        cfg.typo = !cfg.typo;
+        crate::log::line(&format!("菜单:按键纠错 {}", if cfg.typo { "开" } else { "关" }));
+        self.apply_fuzzy(cfg);
+    }
+
+    /// 启用新的模糊音/纠错配置并写 `fuzzy.txt`。
+    fn apply_fuzzy(&self, cfg: FuzzyConfig) {
         let text = cfg.export_off();
         self.engine.borrow_mut().set_fuzzy(cfg);
-        crate::log::line(&format!("菜单:模糊音 {} {}", FuzzyConfig::rule_names()[i], if on { "开" } else { "关" }));
         let Some(path) = fuzzy_path(self.user_path.as_deref()) else { return };
         let _ = path.parent().map(std::fs::create_dir_all);
         if let Err(e) = std::fs::write(&path, text) {
