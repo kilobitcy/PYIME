@@ -5,6 +5,7 @@ use crate::gram::Gram;
 use crate::fuzzy::{partial, spellings_at, variants, FuzzyConfig};
 use crate::pinyin::{is_syllable, steals};
 use crate::symbol::Symbols;
+use crate::typo::edits;
 use crate::user::UserModel;
 
 /// 多字词每次模糊替换的惩罚(自然对数域,约等于词频缩小 e^2.5 ≈ 12 倍)。
@@ -49,6 +50,13 @@ const EN_SLOT: usize = 2;
 const EN_EXACT_MIN: usize = 4;
 /// 每个宿主候选后至多附加几个符号。
 const SYMBOLS_PER_WORD: usize = 2;
+/// 按键纠错:纠错词在整段词口径得分上的额外惩罚;须高于现有最佳整段词与最佳整句才出。
+const TYPO_PENALTY: f64 = 3.0;
+/// 纠错候选至多几个。
+const TYPO_MAX: usize = 2;
+/// 触发纠错的输入长度范围(字节)。
+const TYPO_MIN_LEN: usize = 4;
+const TYPO_MAX_LEN: usize = 12;
 
 /// 选中整句时顺带学习的一项:(拼音片段, 词, 上文)。
 pub type Lesson = (String, String, String);
@@ -70,9 +78,11 @@ pub struct Candidate {
     pub parts: Vec<(usize, usize, usize, String)>,
     /// 候选来源,供评测按来源分桶。
     pub source: Source,
+    /// 按键纠错候选纠正后的拼音(选中时按它学习);其余来源为 `None`。
+    pub fixed: Option<String>,
 }
 
-/// 候选来源:整段词(词典或用户短语吃满输入)、整句(Viterbi 拼装)、前缀词(只吃前一段)、英文(文字全为 ASCII)、符号(附在精确整段词后)。
+/// 候选来源:整段词(词典或用户短语吃满输入)、整句(Viterbi 拼装)、前缀词(只吃前一段)、英文(文字全为 ASCII)、符号(附在精确整段词后)、纠错(输入改一处后的整段词)。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Source {
     Whole,
@@ -80,6 +90,7 @@ pub enum Source {
     Prefix,
     English,
     Symbol,
+    Typo,
 }
 
 impl Candidate {
@@ -367,7 +378,14 @@ impl Engine {
     /// 同 `candidates`,`context` 是光标前已上屏的文字,用于首词的搭配加分。
     pub fn candidates_after(&self, input: &str, context: &str) -> Vec<Candidate> {
         let words = self.words(input, context);
-        let mut out = self.assemble(input, &words);
+        let (mut out, best_sentence) = self.assemble(input, &words);
+        // 按键纠错候选插在第 2 位起;原本没有候选时不插,保持空格原样上屏字母
+        if !out.is_empty() {
+            let fixes = self.typo(input, &words, best_sentence, &out);
+            for (i, c) in fixes.into_iter().enumerate() {
+                out.insert(1 + i, c);
+            }
+        }
         if let Some(en) = &self.english {
             place_english(en, input, cover(&words, input.len()), &mut out);
         }
@@ -409,10 +427,12 @@ impl Engine {
         words
     }
 
-    fn assemble(&self, input: &str, words: &[Word]) -> Vec<Candidate> {
-        let Some(far) = words.iter().map(|w| w.end).max() else { return Vec::new() };
+    fn assemble(&self, input: &str, words: &[Word]) -> (Vec<Candidate>, Option<f64>) {
+        let Some(far) = words.iter().map(|w| w.end).max() else { return (Vec::new(), None) };
         let bigram = |ctx: &str, w: &str| self.gram_bonus(ctx, w);
         let scored = sentences(input, words, far, &bigram);
+        // 供按键纠错比分:所有整句里的最高分
+        let best_sentence = scored.iter().map(|s| s.1).reduce(f64::max);
         // 学过的模糊词只影响整句之间的分档(.2);置前只看第一条真正无模糊的精确整句的得分,
         // 免得学过模糊词的整句占首位后,精确整句不再参与判断、低频整段模糊词反被顶到第一
         let top_sentence = scored.iter().find(|s| s.2 && s.0.fuzzy == 0).map(|s| s.1);
@@ -422,7 +442,7 @@ impl Engine {
         firsts.sort_by(|a, b| b.end.cmp(&a.end).then(b.score.total_cmp(&a.score)));
         let as_cand = |w: &&Word| Candidate {
             text: w.text.clone(), consumed: w.end, fuzzy: w.fuzzy, pairs: w.pairs, cuts: w.cuts.clone(), parts: Vec::new(),
-            source: if w.end == far { Source::Whole } else { Source::Prefix },
+            source: if w.end == far { Source::Whole } else { Source::Prefix }, fixed: None,
         };
         let (whole, rest): (Vec<&Word>, Vec<&Word>) = firsts.into_iter().partition(|w| w.end == far);
         // 没有精确的整段词、整句完全精确且得分高于最佳整段词时,整句排最前;否则整句紧跟整段词
@@ -439,6 +459,43 @@ impl Engine {
             if out.len() < MAX_CANDIDATES && !out.iter().any(|o| o.text == c.text) {
                 out.push(c);
             }
+        }
+        (out, best_sentence)
+    }
+
+    /// 按键纠错:输入没有精确整段词、末尾不是残缺音节、长度在范围内时,对"只改一处"的变体收吃满整段的完整词;
+    /// 得分(整段词口径再减 `TYPO_PENALTY`)须高于现有最佳整段词与最佳整句,至多 `TYPO_MAX` 个,跳过已在 `existing` 中的。
+    fn typo(&self, input: &str, words: &[Word], best_sentence: Option<f64>, existing: &[Candidate]) -> Vec<Candidate> {
+        let len = input.len();
+        if !self.cfg.typo || !(TYPO_MIN_LEN..=TYPO_MAX_LEN).contains(&len) || cover(words, len) == Cover::Partial {
+            return Vec::new();
+        }
+        let whole: Vec<&Word> = words.iter().filter(|w| w.start == 0 && w.end == len && !w.partial).collect();
+        if whole.iter().any(|w| w.fuzzy == 0) {
+            return Vec::new();
+        }
+        let bar = whole.iter().map(|w| w.score - WORD_COST).chain(best_sentence).fold(f64::MIN, f64::max);
+        let mut found: Vec<(f64, Word, String)> = Vec::new();
+        for fixed in edits(input) {
+            let mut ws = Vec::new();
+            self.grow(&fixed, 0, 0, "", Acc::default(), 0, &mut Vec::new(), &mut ws);
+            for w in ws.into_iter().filter(|w| w.end == fixed.len() && !w.partial && w.text.chars().count() >= 2) {
+                let score = w.score - WORD_COST - TYPO_PENALTY;
+                if score > bar {
+                    found.push((score, w, fixed.clone()));
+                }
+            }
+        }
+        found.sort_by(|a, b| b.0.total_cmp(&a.0));
+        let mut out: Vec<Candidate> = Vec::new();
+        for (_, w, fixed) in found {
+            if out.len() == TYPO_MAX {
+                break;
+            }
+            if out.iter().chain(existing).any(|c| c.text == w.text) {
+                continue;
+            }
+            out.push(Candidate { text: w.text, consumed: len, fuzzy: w.fuzzy, pairs: w.pairs, cuts: Vec::new(), parts: Vec::new(), source: Source::Typo, fixed: Some(fixed) });
         }
         out
     }
@@ -458,7 +515,7 @@ fn place_symbols(symbols: &Symbols, words: &[Word], len: usize, out: &mut Vec<Ca
         let cuts = c.cuts.clone();
         let add: Vec<String> = symbols.get(&c.text).iter().take(SYMBOLS_PER_WORD).filter(|s| !out.iter().any(|o| o.text == **s)).cloned().collect();
         for text in add {
-            out.insert(i, Candidate { text, consumed: len, fuzzy: 0, pairs: 0, cuts: cuts.clone(), parts: Vec::new(), source: Source::Symbol });
+            out.insert(i, Candidate { text, consumed: len, fuzzy: 0, pairs: 0, cuts: cuts.clone(), parts: Vec::new(), source: Source::Symbol, fixed: None });
             i += 1;
         }
     }
@@ -503,7 +560,7 @@ fn insert_english<'a>(out: &mut Vec<Candidate>, at: usize, input: &str, hits: im
         if out.iter().any(|c| c.text == h.word) {
             continue;
         }
-        out.insert(i, Candidate { text: h.word.to_string(), consumed: input.len(), fuzzy: 0, pairs: 0, cuts: Vec::new(), parts: Vec::new(), source: Source::English });
+        out.insert(i, Candidate { text: h.word.to_string(), consumed: input.len(), fuzzy: 0, pairs: 0, cuts: Vec::new(), parts: Vec::new(), source: Source::English, fixed: None });
         i += 1;
         n += 1;
     }
@@ -562,7 +619,7 @@ fn sentences(input: &str, words: &[Word], far: usize, bigram: &dyn Fn(&str, &str
         if path.len() >= 2 && out.len() < BEAM && !out.iter().any(|c| c.0.text == text) {
             out.push(({
                 cuts.sort_unstable();
-                Candidate { text, consumed: far, fuzzy, pairs, cuts, parts: fuzzy_parts(&path), source: Source::Sentence }
+                Candidate { text, consumed: far, fuzzy, pairs, cuts, parts: fuzzy_parts(&path), source: Source::Sentence, fixed: None }
             }, best[far][r].0, !best[far][r].4));
         }
     }
@@ -1114,5 +1171,75 @@ mod tests {
         assert!(texts(&e, "kube").contains(&"Kubernetes".to_string()));
         e.learn("kube", "苦被");
         assert!(!texts(&e, "kube").contains(&"Kubernetes".to_string()));
+    }
+
+    fn typo_engine(extra: &[(&str, &str, u32)]) -> Engine {
+        let mut v = vec![("tuo", "拖", 8000), ("jian", "见", 8000), ("tui jian", "推荐", 50000)];
+        v.extend_from_slice(extra);
+        engine(&v)
+    }
+
+    fn has_typo(e: &Engine, input: &str) -> bool {
+        e.candidates(input).iter().any(|c| c.source == Source::Typo)
+    }
+
+    #[test]
+    fn 无精确整段词时纠错词排第二_带纠正后拼音() {
+        let c = typo_engine(&[]).candidates("tuojian");
+        assert_eq!(c[0].text, "拖见");
+        assert_eq!((c[1].text.as_str(), c[1].source, c[1].fixed.as_deref()), ("推荐", Source::Typo, Some("tuijian")));
+        assert_eq!(c[1].consumed, 7);
+        assert!(c[1].cuts.is_empty() && c[1].parts.is_empty());
+        assert!(c.iter().filter(|c| c.source != Source::Typo).all(|c| c.fixed.is_none()));
+    }
+
+    #[test]
+    fn 模糊整段词不挡纠错() {
+        let e = typo_engine(&[("tuo jiang", "脱缰", 2810)]);
+        assert_eq!(texts(&e, "tuojian")[..2], ["脱缰", "推荐"]);
+    }
+
+    #[test]
+    fn 有精确整段词时不纠() {
+        assert!(!has_typo(&typo_engine(&[("tuo jian", "拖建", 10)]), "tuojian"));
+    }
+
+    #[test]
+    fn 末尾残缺音节时不纠() {
+        // 变体 tuji 能命中 突击,但 tuij 末尾残缺,不应闪出
+        assert!(!has_typo(&typo_engine(&[("tu ji", "突击", 50000)]), "tuij"));
+    }
+
+    #[test]
+    fn 开关关闭时不纠() {
+        let mut e = typo_engine(&[]);
+        let mut cfg = FuzzyConfig::default();
+        cfg.typo = false;
+        e.set_fuzzy(cfg);
+        assert!(!has_typo(&e, "tuojian"));
+    }
+
+    #[test]
+    fn 现有整句得分更高时不纠() {
+        let e = engine(&[("tuo", "拖", 1_000_000), ("jian", "见", 1_000_000), ("tui jian", "推荐", 1)]);
+        assert!(!has_typo(&e, "tuojian"));
+    }
+
+    #[test]
+    fn 原有候选为空时不插() {
+        assert!(typo_engine(&[]).candidates("thuijian").is_empty());
+    }
+
+    #[test]
+    fn 不纠单字() {
+        // zhusng 的变体 zhuang 命中单字 庄,不应出
+        let e = engine(&[("zhu", "猪", 8000), ("zhuang", "庄", 900_000)]);
+        assert!(!texts(&e, "zhusng").contains(&"庄".to_string()));
+    }
+
+    #[test]
+    fn 超长输入不纠() {
+        let e = typo_engine(&[("ke", "科", 8000), ("ji", "技", 8000), ("ba", "吧", 8000), ("tui jian ke ji ba", "推荐科技吧", 50000)]);
+        assert!(!has_typo(&e, "tuojiankejiba")); // 13 个字母 > TYPO_MAX_LEN
     }
 }

@@ -157,6 +157,7 @@ fn bucket(c: &Candidate) -> String {
         Source::Prefix => "前缀词",
         Source::English => "英文",
         Source::Symbol => "符号",
+        Source::Typo => "纠错",
     };
     if c.fuzzy > 0 { format!("{src}·模糊") } else { src.to_string() }
 }
