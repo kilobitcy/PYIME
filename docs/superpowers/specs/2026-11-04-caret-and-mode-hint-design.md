@@ -33,7 +33,7 @@
 - 发方向键前用 `GetAsyncKeyState` 查左、右 Shift。有按着的,在**同一次** `SendInput` 里发 `[按着的 Shift ↑, 方向键 ↓, 方向键 ↑, 同一 Shift ↓]`;都没按着则照旧只发方向键。`SendInput` 保证同一次调用的事件不与用户或其他注入的输入交错。
 - Shift 用 `VK_LSHIFT`/`VK_RSHIFT` 及各自扫描码(0x2A/0x36),不带 `KEYEVENTF_EXTENDEDKEY`;方向键仍带该标志。
 - 剩余竞态:查询与 `SendInput` 之间(微秒级)用户恰好松开 Shift,会使 Shift 逻辑上停在按下,直到下次按 Shift。可接受,写入代码注释。
-- 注入的 Shift 也会经输入法回来。会话按现有逻辑:用户按 Shift+9 时 `shift_pending` 已因 `9` 清掉;回来的 Shift ↑ 记 `shift_combo_up`,回来的 Shift ↓ 因刚记过而判 `shift_misfire`,用户随后松开 Shift 不切换。为稳妥,注入回声跳过(`note_passthrough` 开头 `injected` 窗口)扩到 Shift 键,并补测试锁住"按住 Shift 打 `(` 再松开不切换"。
+- 注入的 Shift 也会经输入法回来。会话按现有逻辑:用户按 Shift+9 时 `shift_pending` 已因 `9` 清掉;回来的 Shift ↑ 记 `shift_combo_up`,回来的 Shift ↓ 因刚记过而判 `shift_misfire`,用户随后松开 Shift 不切换。不对 Shift 做回声跳过(300ms 窗口内无法区分注入与用户真实松开,跳过反而丢掉真实事件),补测试锁住"按住 Shift 打 `(`、经回声、再松开不切换"。
 
 ### 2. 切换改到带会话的 `onKeyUp`(`session.rs`)
 
@@ -45,8 +45,8 @@
 
 ### 3. 提示窗(`tsf/`)
 
-- 复用现有 `showMessage` 协议字段与 `TextService::showMessage`(不在组字时它会临时开组字取位置再结束)。
-- 定位回退:`selectionRect` 取不到或矩形全为 0 时,依次退到 `GetGUIThreadInfo` 的 `rcCaret`(转屏幕坐标)、本上下文最近一次候选窗位置;都没有则不显示(不落到屏幕左上角)。
+- 复用现有 `showMessage` 协议字段与 `TextService::showMessage`。PIME 原写法在不组字时临时开一个空组字取位置再结束,网页编辑器会因此收到一对空的 compositionstart/end;改为不开组字:`Client::updateMessageWindow` 去掉临时开/结束组字,`showMessage` 不组字时用新增的 libIME2 `caretRect`(写法同 `selectionRect`,不要求组字)取当前选区矩形。
+- 定位回退:组字时 `selectionRect`、不组字时 `caretRect` 取不到或矩形全为 0 时,依次退到 `GetGUIThreadInfo` 的 `rcCaret`(转屏幕坐标)、本上下文最近一次候选窗位置;都没有则不显示(不落到屏幕左上角)。
 - 外观:`MessageWindow::onPaint` 桌面模式改为与候选窗一致(白底、1px #E5E5E5 边框、文字 #333,字体同候选窗),去掉 `COLOR_INFOBK` 与 3D 边框。后端此前不发 `showMessage`,不影响其他提示。
 - 收起:约 1 秒计时;下一次 `onKeyDown` 先隐藏,免得与候选窗叠在一起。切到英文后按键多被放行、不进 `onKeyDown`,此时只靠计时,提示最多在旧位置停留 1 秒。
 
