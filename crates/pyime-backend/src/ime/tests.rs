@@ -176,3 +176,25 @@ fn 默认中文列表_无数据目录时用内存初始列表() {
     assert!(ime.toggle_chinese_app("notepad.exe"));
     assert!(ime.is_chinese_app("notepad.exe"));
 }
+
+#[test]
+fn 无shift时只发方向键() {
+    let ev = arrow_events(37, false, false);
+    assert_eq!(ev, vec![KeyEv { vk: 37, scan: 0, up: false, extended: true }, KeyEv { vk: 37, scan: 0, up: true, extended: true }]);
+}
+
+#[test]
+fn 按着左shift时先抬起再按回() {
+    let ev = arrow_events(37, true, false);
+    let lift = KeyEv { vk: 0xA0, scan: 0x2A, up: true, extended: false };
+    let back = KeyEv { vk: 0xA0, scan: 0x2A, up: false, extended: false };
+    assert_eq!(ev, vec![lift, KeyEv { vk: 37, scan: 0, up: false, extended: true }, KeyEv { vk: 37, scan: 0, up: true, extended: true }, back]);
+}
+
+#[test]
+fn 左右shift都按着时都抬起_按回顺序相反() {
+    let ev = arrow_events(39, true, true);
+    let vks: Vec<(u16, bool)> = ev.iter().map(|e| (e.vk, e.up)).collect();
+    assert_eq!(vks, vec![(0xA0, true), (0xA1, true), (39, false), (39, true), (0xA1, false), (0xA0, false)]);
+    assert_eq!(ev[1].scan, 0x36);
+}

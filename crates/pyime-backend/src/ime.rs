@@ -37,7 +37,27 @@ pub struct Ime {
     pressed: RefCell<Vec<u16>>,
 }
 
-/// 向前台应用注入一次按键(按下 + 弹起),用于成对符号补全后回退/跳过光标。
+/// 模拟按键的一个事件。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct KeyEv {
+    pub vk: u16,
+    pub scan: u16,
+    pub up: bool,
+    pub extended: bool,
+}
+
+/// 模拟一次方向键的事件序列。用户按着 Shift(打 `(` 时常未松开)会让应用收到 Shift+方向键而选中文字,
+/// 故按着的 Shift 先抬起、发完方向键再按回;整串由一次 `SendInput` 发出,不与用户输入交错。
+pub(crate) fn arrow_events(vk: u16, lshift: bool, rshift: bool) -> Vec<KeyEv> {
+    let shifts: Vec<(u16, u16)> = [(lshift, 0xA0, 0x2A), (rshift, 0xA1, 0x36)].iter().filter(|s| s.0).map(|s| (s.1, s.2)).collect();
+    let mut ev: Vec<KeyEv> = shifts.iter().map(|&(vk, scan)| KeyEv { vk, scan, up: true, extended: false }).collect();
+    ev.push(KeyEv { vk, scan: 0, up: false, extended: true });
+    ev.push(KeyEv { vk, scan: 0, up: true, extended: true });
+    ev.extend(shifts.iter().rev().map(|&(vk, scan)| KeyEv { vk, scan, up: false, extended: false }));
+    ev
+}
+
+/// 向前台应用注入一次方向键(按下 + 弹起),用于成对符号补全后回退/跳过光标;按着的 Shift 临时抬起。
 #[cfg(windows)]
 fn send_key(vk: u16) {
     #[repr(C)]
@@ -57,14 +77,23 @@ fn send_key(vk: u16) {
     #[link(name = "user32")]
     extern "system" {
         fn SendInput(count: u32, inputs: *const Input, size: i32) -> u32;
+        fn GetAsyncKeyState(vk: i32) -> i16;
     }
     const INPUT_KEYBOARD: u32 = 1;
     const KEYEVENTF_EXTENDEDKEY: u32 = 1;
     const KEYEVENTF_KEYUP: u32 = 2;
-    let mk = |flags| Input { kind: INPUT_KEYBOARD, ki: KeybdInput { vk, scan: 0, flags: flags | KEYEVENTF_EXTENDEDKEY, time: 0, extra: 0 }, pad: [0; 8] };
-    let inputs = [mk(0), mk(KEYEVENTF_KEYUP)];
+    // SAFETY: GetAsyncKeyState 只读全局键盘状态。
+    let down = |vk: i32| unsafe { GetAsyncKeyState(vk) } < 0;
+    // 剩余竞态:查询与 SendInput 之间(微秒级)用户恰好松开 Shift,Shift 会逻辑上停在按下,直到下次按 Shift
+    let inputs: Vec<Input> = arrow_events(vk, down(0xA0), down(0xA1))
+        .into_iter()
+        .map(|e| {
+            let flags = if e.up { KEYEVENTF_KEYUP } else { 0 } | if e.extended { KEYEVENTF_EXTENDEDKEY } else { 0 };
+            Input { kind: INPUT_KEYBOARD, ki: KeybdInput { vk: e.vk, scan: e.scan, flags, time: 0, extra: 0 }, pad: [0; 8] }
+        })
+        .collect();
     // SAFETY: inputs 是有效的 INPUT 数组,布局与 Win32 INPUT(64 位下 40 字节)一致。
-    unsafe { SendInput(2, inputs.as_ptr(), std::mem::size_of::<Input>() as i32) };
+    unsafe { SendInput(inputs.len() as u32, inputs.as_ptr(), std::mem::size_of::<Input>() as i32) };
 }
 
 /// 词典随安装包放在 `server.exe` 同目录。
