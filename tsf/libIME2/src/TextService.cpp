@@ -927,9 +927,10 @@ bool TextService::selectionRect(EditSession* session, RECT* rect) const {
         ComPtr<ITfContextView> view;
         if(session->context()->GetActiveView(&view) == S_OK) {
             BOOL clipped;
-            TF_SELECTION selection;
-            ULONG selectionNum;
-            if(session->context()->GetSelection(session->editCookie(), TF_DEFAULT_SELECTION, 1, &selection, &selectionNum) == S_OK ) {
+            // PYIME:初始化并判选区数,宿主回 S_OK 但 0 个选区时不对垃圾指针 Release
+            TF_SELECTION selection = {};
+            ULONG selectionNum = 0;
+            if(session->context()->GetSelection(session->editCookie(), TF_DEFAULT_SELECTION, 1, &selection, &selectionNum) == S_OK && selectionNum == 1) {
                 if(view->GetTextExt(session->editCookie(), selection.range, rect, &clipped) == S_OK)
                     ret = true;
                 selection.range->Release();
@@ -945,9 +946,10 @@ bool TextService::caretRect(EditSession* session, RECT* rect) const {
     ComPtr<ITfContextView> view;
     if(session->context()->GetActiveView(&view) == S_OK) {
         BOOL clipped;
-        TF_SELECTION selection;
-        ULONG selectionNum;
-        if(session->context()->GetSelection(session->editCookie(), TF_DEFAULT_SELECTION, 1, &selection, &selectionNum) == S_OK) {
+        // PYIME:同 selectionRect,初始化并判选区数
+        TF_SELECTION selection = {};
+        ULONG selectionNum = 0;
+        if(session->context()->GetSelection(session->editCookie(), TF_DEFAULT_SELECTION, 1, &selection, &selectionNum) == S_OK && selectionNum == 1) {
             if(view->GetTextExt(session->editCookie(), selection.range, rect, &clipped) == S_OK)
                 ret = true;
             selection.range->Release();

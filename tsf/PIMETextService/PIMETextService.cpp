@@ -97,6 +97,9 @@ void TextService::onFocus() {
 
 // virtual
 bool TextService::filterKeyDown(Ime::KeyEvent& keyEvent) {
+	// PYIME:接着打字时收起中/英提示(切到英文后字母不进 onKeyDown,须在此收起);hideMessage 不需要会话
+	if (messageWindow_)
+		hideMessage();
 	// if (keyEvent.isKeyToggled(VK_CAPITAL))
 	//	return true;
 	if(!client_)
@@ -108,9 +111,6 @@ bool TextService::filterKeyDown(Ime::KeyEvent& keyEvent) {
 bool TextService::onKeyDown(Ime::KeyEvent& keyEvent, Ime::EditSession* session) {
 	//if (keyEvent.isKeyToggled(VK_CAPITAL))
 	//	return true;
-	// PYIME:接着打字时收起中/英提示,免得与候选窗叠在一起
-	if (messageWindow_)
-		hideMessage();
 	if (!client_)
 		return false;
 	return client_->onKeyDown(keyEvent, session);

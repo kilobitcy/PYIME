@@ -1204,7 +1204,7 @@ fn 单击shift在filterkeyup只回true_onkeyup才切换并提示() {
     assert!(r.get("showMessage").is_none() && r.get("changeButton").is_none());
     assert_eq!(key(&mut s, "filterKeyUp", 16)["return"], true); // OnKeyUp 前的第二次 filterKeyUp
     let r = key(&mut s, "onKeyUp", 16);
-    assert_eq!(r["return"], true);
+    assert_eq!(r["return"], false); // 不吃 Shift 抬起,宿主仍收到 Shift↑
     assert_eq!(r["showMessage"], json!({"message": "英", "duration": 1}));
     assert_eq!(key(&mut s, "filterKeyDown", N)["return"], false);
     assert_eq!(shift_click(&mut s)["showMessage"]["message"], "中");
@@ -1238,7 +1238,21 @@ fn 宿主没调onkeyup时下一次按键补切换() {
     let mut s = session();
     key(&mut s, "filterKeyDown", 16);
     key(&mut s, "filterKeyUp", 16);
-    assert_eq!(key(&mut s, "filterKeyDown", N)["return"], false);
+    let r = key(&mut s, "filterKeyDown", N);
+    assert_eq!(r["return"], false);
+    assert!(r.get("showMessage").is_none());
+}
+
+#[test]
+fn 组字中宿主没调onkeyup时不补切换() {
+    let mut s = session();
+    press(&mut s, &[N, I]);
+    key(&mut s, "filterKeyDown", 16);
+    key(&mut s, "filterKeyUp", 16); // 宿主没接着调 onKeyUp
+    let r = key(&mut s, "filterKeyDown", N);
+    assert!(r.get("commitString").is_none());
+    assert!(s.composing());
+    assert_eq!(r["return"], true); // 仍是中文
 }
 
 #[test]

@@ -185,8 +185,9 @@ impl Session {
         let is_shift = VK_SHIFT_KEYS.contains(&key);
         match req["method"].as_str().unwrap_or("") {
             m @ ("filterKeyDown" | "onKeyDown") => {
-                // 宿主没调 onKeyUp(少见):下一次按下时补切换,不提示
-                if std::mem::take(&mut self.toggle_on_up) {
+                // 宿主没调 onKeyUp(少见):下一次按下时补切换,不提示。
+                // 组字中不补:这里是无编辑会话的回复,flush_raw 的 commitString 会丢,会话与应用失同步,故丢掉这次切换
+                if std::mem::take(&mut self.toggle_on_up) && !self.composing() {
                     self.toggle_english(&mut resp);
                 }
                 if is_shift && !self.shift_pending {
@@ -225,7 +226,10 @@ impl Session {
                 } else if is_shift && std::mem::take(&mut self.toggle_on_up) {
                     self.toggle_english(&mut resp);
                     resp["showMessage"] = json!({ "message": if self.english { "英" } else { "中" }, "duration": 1 });
-                    resp["return"] = json!(true);
+                    // 回 false:libIME2 的 OnKeyUp 在同步编辑会话里执行 onKeyUp 后才按返回值决定是否吃键,
+                    // 上屏与提示照常生效,宿主仍收到 Shift↑(网页靠 keyup 记 Shift 状态,JetBrains 双击 Shift 依赖它);
+                    // filterKeyUp 仍回 true,否则 TSF 不会调 OnKeyUp
+                    resp["return"] = json!(false);
                 }
             }
             // 应用强制结束了组字(切焦点、截图工具等):组字串已按原样留在应用里,丢掉会话里的拼音,

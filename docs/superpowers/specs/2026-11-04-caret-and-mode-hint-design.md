@@ -39,8 +39,8 @@
 
 - `filterKeyUp` 收到 Shift 抬起、`shift_pending` 为真且非误触时:不再当场切换,改记 `toggle_on_up = true` 并回 `return: true`(TSF 随后调 `OnKeyUp` → 带编辑会话的 `onKeyUp`)。
 - 同一次抬键的第二次 `filterKeyUp`(`toggle_on_up` 已为真):同样回 `true`,且**不**记 `shift_combo_up`(修缺陷二)。
-- `onKeyUp` 收到 Shift 且 `toggle_on_up`:清标记,`toggle_english`,并写 `showMessage = { message: "中"|"英", duration: 1 }`。组字中切到英文时 `commitString` 现在有会话,能上屏(修缺陷一)。
-- 保险:`toggle_on_up` 仍为真时若先来了任何 `filterKeyDown`(宿主没调 `OnKeyUp`),当场切换且不提示。
+- `onKeyUp` 收到 Shift 且 `toggle_on_up`:清标记,`toggle_english`,并写 `showMessage = { message: "中"|"英", duration: 1 }`,回复 `return: false`(不吃 Shift 抬起,宿主仍收到 Shift↑;`filterKeyUp` 仍回 `true` 以便 TSF 调 `OnKeyUp`)。组字中切到英文时 `commitString` 现在有会话,能上屏(修缺陷一)。
+- 保险:`toggle_on_up` 仍为真时若先来了任何 `filterKeyDown`(宿主没调 `OnKeyUp`),当场切换且不提示;组字中不补(无会话的回复会丢 `commitString`),直接丢掉这次切换。
 - 托盘、菜单切换仍直接 `toggle_english`,不写 `showMessage`。
 
 ### 3. 提示窗(`tsf/`)
@@ -48,7 +48,7 @@
 - 复用现有 `showMessage` 协议字段与 `TextService::showMessage`。PIME 原写法在不组字时临时开一个空组字取位置再结束,网页编辑器会因此收到一对空的 compositionstart/end;改为不开组字:`Client::updateMessageWindow` 去掉临时开/结束组字,`showMessage` 不组字时用新增的 libIME2 `caretRect`(写法同 `selectionRect`,不要求组字)取当前选区矩形。
 - 定位回退:组字时 `selectionRect`、不组字时 `caretRect` 取不到或矩形全为 0 时,依次退到 `GetGUIThreadInfo` 的 `rcCaret`(转屏幕坐标)、本上下文最近一次候选窗位置;都没有则不显示(不落到屏幕左上角)。
 - 外观:`MessageWindow::onPaint` 桌面模式改为与候选窗一致(白底、1px #E5E5E5 边框、文字 #333,字体同候选窗),去掉 `COLOR_INFOBK` 与 3D 边框。后端此前不发 `showMessage`,不影响其他提示。
-- 收起:约 1 秒计时;下一次 `onKeyDown` 先隐藏,免得与候选窗叠在一起。切到英文后按键多被放行、不进 `onKeyDown`,此时只靠计时,提示最多在旧位置停留 1 秒。
+- 收起:约 1 秒计时;下一次 `filterKeyDown` 开头先隐藏(切到英文后字母被放行、不进 `onKeyDown`,故放在 `filterKeyDown`;隐藏不需要会话),免得与候选窗叠在一起。
 
 ### 4. 兼容
 
