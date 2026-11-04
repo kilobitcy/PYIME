@@ -96,6 +96,9 @@ pub struct Session {
     /// 本次 Shift 按下时离上次组合 Shift 松开太近,松开时不切换。
     shift_misfire: bool,
     shift_guard: Duration,
+    /// 本次 Shift 抬起已判为单击:filterKeyUp 的回复没有编辑会话、不能上屏,
+    /// 故回 true 让 TSF 接着调带会话的 onKeyUp,在那里切换。
+    toggle_on_up: bool,
     /// 本次组词已做的学习。
     learned: Vec<Learned>,
     last: Option<Last>,
@@ -127,7 +130,7 @@ pub struct Session {
 
 impl Session {
     pub fn new(ime: Rc<Ime>) -> Session {
-        Session { ime, pending: String::new(), input: String::new(), cands: Vec::new(), typed_all: String::new(), context: String::new(), segments: 0, typo_seg: false, page: 0, cursor: 0, english: false, shift_pending: false, shift_combo_up: None, shift_misfire: false, shift_guard: SHIFT_GUARD, learned: Vec::new(), last: None, after_digit: false, quote_open: [false; 2], closers: Vec::new(), injected: None, inject_echo: INJECT_ECHO, back_counted: None, peak: None, deleting: false, caps: String::new(), caps_down: None, win8: false, exe: String::new() }
+        Session { ime, pending: String::new(), input: String::new(), cands: Vec::new(), typed_all: String::new(), context: String::new(), segments: 0, typo_seg: false, page: 0, cursor: 0, english: false, shift_pending: false, shift_combo_up: None, shift_misfire: false, shift_guard: SHIFT_GUARD, toggle_on_up: false, learned: Vec::new(), last: None, after_digit: false, quote_open: [false; 2], closers: Vec::new(), injected: None, inject_echo: INJECT_ECHO, back_counted: None, peak: None, deleting: false, caps: String::new(), caps_down: None, win8: false, exe: String::new() }
     }
 
     /// 新连接的会话:宿主 `exe` 在 `chinese-apps.txt` 里则默认中文,否则默认英文。
@@ -182,6 +185,10 @@ impl Session {
         let is_shift = VK_SHIFT_KEYS.contains(&key);
         match req["method"].as_str().unwrap_or("") {
             m @ ("filterKeyDown" | "onKeyDown") => {
+                // 宿主没调 onKeyUp(少见):下一次按下时补切换,不提示
+                if std::mem::take(&mut self.toggle_on_up) {
+                    self.toggle_english(&mut resp);
+                }
                 if is_shift && !self.shift_pending {
                     self.shift_misfire = self.shift_combo_up.is_some_and(|t| t.elapsed() < self.shift_guard);
                 }
@@ -207,12 +214,18 @@ impl Session {
                 }
                 if is_shift && req["method"] == "filterKeyUp" {
                     if std::mem::take(&mut self.shift_pending) {
-                        if !self.shift_misfire {
-                            self.toggle_english(&mut resp);
-                        }
-                    } else {
+                        self.toggle_on_up = !self.shift_misfire;
+                    } else if !self.toggle_on_up {
+                        // 已判为单击时,同一次抬键的第二次 filterKeyUp(OnTestKeyUp 后 OnKeyUp 又调一次)不算组合松开
                         self.shift_combo_up = Some(Instant::now());
                     }
+                    if self.toggle_on_up {
+                        resp["return"] = json!(true);
+                    }
+                } else if is_shift && std::mem::take(&mut self.toggle_on_up) {
+                    self.toggle_english(&mut resp);
+                    resp["showMessage"] = json!({ "message": if self.english { "英" } else { "中" }, "duration": 1 });
+                    resp["return"] = json!(true);
                 }
             }
             // 应用强制结束了组字(切焦点、截图工具等):组字串已按原样留在应用里,丢掉会话里的拼音,

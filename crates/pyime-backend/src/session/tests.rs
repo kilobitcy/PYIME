@@ -168,9 +168,11 @@ fn esc清空且无候选时空格上屏原串() {
     assert_eq!(r["commitString"], "oo");
 }
 
+/// 单击 Shift,按 TSF 流程:filterKeyUp 回 true 时接着发 onKeyUp(带编辑会话),返回最后一个回复。
 fn shift_click(s: &mut Session) -> Value {
     key(s, "filterKeyDown", 16);
-    key(s, "filterKeyUp", 16)
+    let r = key(s, "filterKeyUp", 16);
+    if r["return"] == true { key(s, "onKeyUp", 16) } else { r }
 }
 
 #[test]
@@ -1191,4 +1193,67 @@ fn 按键纠错菜单项切换并写盘_重启后保持() {
     assert_eq!(typo_checked(&mut s), false);
     assert_eq!(menu_cmd(&mut s, tray::CMD_TYPO)["return"], true);
     assert_eq!(std::fs::read_to_string(&f).unwrap(), "");
+}
+
+#[test]
+fn 单击shift在filterkeyup只回true_onkeyup才切换并提示() {
+    let mut s = session();
+    key(&mut s, "filterKeyDown", 16);
+    let r = key(&mut s, "filterKeyUp", 16);
+    assert_eq!(r["return"], true);
+    assert!(r.get("showMessage").is_none() && r.get("changeButton").is_none());
+    assert_eq!(key(&mut s, "filterKeyUp", 16)["return"], true); // OnKeyUp 前的第二次 filterKeyUp
+    let r = key(&mut s, "onKeyUp", 16);
+    assert_eq!(r["return"], true);
+    assert_eq!(r["showMessage"], json!({"message": "英", "duration": 1}));
+    assert_eq!(key(&mut s, "filterKeyDown", N)["return"], false);
+    assert_eq!(shift_click(&mut s)["showMessage"]["message"], "中");
+}
+
+#[test]
+fn 同一次抬键两次filterkeyup_紧接着再单击仍切换() {
+    let mut s = session();
+    for _ in 0..2 {
+        key(&mut s, "filterKeyDown", 16);
+        key(&mut s, "filterKeyUp", 16);
+        key(&mut s, "filterKeyUp", 16);
+        key(&mut s, "onKeyUp", 16);
+    }
+    assert_eq!(key(&mut s, "filterKeyDown", N)["return"], true); // 切了两次,回到中文
+}
+
+#[test]
+fn 组字中单击shift_拼音在onkeyup回复里上屏() {
+    let mut s = session();
+    press(&mut s, &[N, I]);
+    key(&mut s, "filterKeyDown", 16);
+    assert!(key(&mut s, "filterKeyUp", 16).get("commitString").is_none());
+    let r = key(&mut s, "onKeyUp", 16);
+    assert_eq!(r["commitString"], "ni");
+    assert_eq!(r["showMessage"]["message"], "英");
+}
+
+#[test]
+fn 宿主没调onkeyup时下一次按键补切换() {
+    let mut s = session();
+    key(&mut s, "filterKeyDown", 16);
+    key(&mut s, "filterKeyUp", 16);
+    assert_eq!(key(&mut s, "filterKeyDown", N)["return"], false);
+}
+
+#[test]
+fn 托盘左键切换不提示() {
+    let mut s = win8_session();
+    assert!(left_click(&mut s).get("showMessage").is_none());
+}
+
+#[test]
+fn 按住shift打括号_注入回声后松开不切换() {
+    let mut s = session();
+    key(&mut s, "filterKeyDown", 16); // 用户按住 Shift
+    pk(&mut s, 57, true); // Shift+9 → （）,并模拟 ←
+    key(&mut s, "filterKeyUp", 16); // 注入的 Shift↑ 经输入法回来
+    key(&mut s, "filterKeyDown", 16); // 注入的 Shift↓ 回来
+    assert_eq!(key(&mut s, "filterKeyUp", 16)["return"], false); // 用户松开
+    assert_eq!(key(&mut s, "filterKeyDown", N)["return"], true); // 仍是中文
 }
