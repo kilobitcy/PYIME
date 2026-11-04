@@ -152,6 +152,7 @@ private:
 	void closeClient();
 
 private:
+	bool messageAnchor(Ime::EditSession* session, POINT* pt);
 	bool validCandidateListElementId_;
 	DWORD candidateListElementId_;
 	Ime::ComPtr<Ime::CandidateWindow> candidateWindow_; // this is a ref-counted COM object and should not be managed with std::unique_ptr
@@ -159,6 +160,8 @@ private:
 	std::vector<std::wstring> candidates_; // current candidate list
 	std::unique_ptr<Ime::MessageWindow> messageWindow_;
 	UINT messageTimerId_;
+	POINT lastCandPos_ = {0, 0};  // PYIME:最近一次候选窗位置,提示定位的最后回退
+	bool hasCandPos_ = false;
 	HFONT font_;
 	bool updateFont_;
 	int candPerRow_;

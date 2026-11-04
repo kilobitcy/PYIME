@@ -108,6 +108,9 @@ bool TextService::filterKeyDown(Ime::KeyEvent& keyEvent) {
 bool TextService::onKeyDown(Ime::KeyEvent& keyEvent, Ime::EditSession* session) {
 	//if (keyEvent.isKeyToggled(VK_CAPITAL))
 	//	return true;
+	// PYIME:接着打字时收起中/英提示,免得与候选窗叠在一起
+	if (messageWindow_)
+		hideMessage();
 	if (!client_)
 		return false;
 	return client_->onKeyDown(keyEvent, session);
@@ -287,6 +290,8 @@ void TextService::updateCandidates(Ime::EditSession* session) {
 	if (selectionRect(session, &textRect)) {
 		// FIXME: where should we put the candidate window?
 		candidateWindow_->move(textRect.left, textRect.bottom);
+		lastCandPos_ = {textRect.left, textRect.bottom};
+		hasCandPos_ = true;
 	}
 
 	if (validCandidateListElementId_) {
@@ -304,6 +309,8 @@ void TextService::updateCandidatesWindow(Ime::EditSession* session) {
         if (selectionRect(session, &textRect)) {
             // FIXME: where should we put the candidate window?
             candidateWindow_->move(textRect.left, textRect.bottom);
+            lastCandPos_ = {textRect.left, textRect.bottom};
+            hasCandPos_ = true;
         }
     }
 }
@@ -351,26 +358,44 @@ void TextService::hideCandidates() {
 }
 
 // message window
+// PYIME:不再临时开组字;定位取不到就不显示(不落到屏幕左上角)
 void TextService::showMessage(Ime::EditSession* session, std::wstring message, int duration) {
 	// remove previous message if there's any
 	hideMessage();
-	// FIXME: reuse the window whenever possible
+	POINT pt;
+	if (!messageAnchor(session, &pt))
+		return;
 	messageWindow_ = make_unique<Ime::MessageWindow>(this, session);
 	messageWindow_->setFont(font_);
 	messageWindow_->setText(message);
-	
-	int x = 0, y = 0;
-	if(isComposing()) {
-		RECT rc;
-		if(selectionRect(session, &rc)) {
-			x = rc.left;
-			y = rc.bottom;
-		}
-	}
-	messageWindow_->move(x, y);
+	messageWindow_->move(pt.x, pt.y);
 	messageWindow_->show();
 
 	messageTimerId_ = ::SetTimer(messageWindow_->hwnd(), 1, duration * 1000, (TIMERPROC)TextService::onMessageTimeout);
+}
+
+// PYIME:提示位置依次取 组字/光标处文字矩形的左下角、系统插入符、最近一次候选窗位置。
+bool TextService::messageAnchor(Ime::EditSession* session, POINT* pt) {
+	RECT rc = {0};
+	bool ok = isComposing() ? selectionRect(session, &rc) : caretRect(session, &rc);
+	if (ok && (rc.left || rc.top || rc.right || rc.bottom)) {
+		pt->x = rc.left;
+		pt->y = rc.bottom;
+		return true;
+	}
+	GUITHREADINFO gti = {sizeof(gti)};
+	if (::GetGUIThreadInfo(::GetCurrentThreadId(), &gti) && gti.hwndCaret) {
+		POINT p = {gti.rcCaret.left, gti.rcCaret.bottom};
+		if (::ClientToScreen(gti.hwndCaret, &p)) {
+			*pt = p;
+			return true;
+		}
+	}
+	if (hasCandPos_) {
+		*pt = lastCandPos_;
+		return true;
+	}
+	return false;
 }
 
 void TextService::updateMessageWindow(Ime::EditSession* session) {

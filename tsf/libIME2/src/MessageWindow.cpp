@@ -92,11 +92,12 @@ void MessageWindow::onPaint(PAINTSTRUCT& ps) {
         ::DeleteObject(pen);
     }
     else {
-        SetTextColor(hDC, GetSysColor(COLOR_INFOTEXT));
-        SetBkColor(hDC, GetSysColor(COLOR_INFOBK));
-        // draw a 3d border in desktop mode
-        ::FillSolidRect(hDC, &rc, ::GetSysColor(COLOR_INFOBK));
-        ::Draw3DBorder(hDC, &rc, GetSysColor(COLOR_3DFACE), 0);
+        // PYIME:与候选窗一致,白底、1px 浅灰边框、深灰字
+        SetTextColor(hDC, RGB(0x33, 0x33, 0x33));
+        ::FillSolidRect(hDC, &rc, RGB(0xFF, 0xFF, 0xFF));
+        HBRUSH border = ::CreateSolidBrush(RGB(0xE5, 0xE5, 0xE5));
+        ::FrameRect(hDC, &rc, border);
+        ::DeleteObject(border);
     }
 
     SIZE size;

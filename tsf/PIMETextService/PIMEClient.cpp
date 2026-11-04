@@ -188,11 +188,9 @@ void Client::updateMessageWindow(Json::Value& msg, Ime::EditSession* session, bo
     if (showMessageVal.isObject()) {
         const Json::Value& message = showMessageVal["message"];
         const Json::Value& duration = showMessageVal["duration"];
-        if (message.isString() && duration.isInt()) {
-            if (!textService_->isComposing()) {
-                textService_->startComposition(session->context());
-                endComposition = true;
-            }
+        // PYIME:无编辑会话(filterKey*/onCommand)时不显示,否则 MessageWindow 取父窗口会解引用空会话;
+        // 不再临时开空组字取位置(网页编辑器会收到一对空的 compositionstart/end),定位见 TextService::messageAnchor
+        if (message.isString() && duration.isInt() && session != nullptr) {
             textService_->showMessage(session, utf8ToUtf16(message.asCString()), duration.asInt());
         }
     }

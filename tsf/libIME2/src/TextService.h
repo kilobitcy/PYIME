@@ -137,6 +137,7 @@ public:
     void endComposition(ITfContext* context);
     bool compositionRect(EditSession* session, RECT* rect) const;
     bool selectionRect(EditSession* session, RECT* rect) const;
+    bool caretRect(EditSession* session, RECT* rect) const;  // PYIME:同 selectionRect,但不要求在组字中
     HWND compositionWindow(EditSession* session) const;
 
     std::wstring compositionString(EditSession* session) const;

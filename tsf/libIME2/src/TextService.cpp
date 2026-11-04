@@ -939,6 +939,23 @@ bool TextService::selectionRect(EditSession* session, RECT* rect) const {
     return ret;
 }
 
+// PYIME:同 selectionRect,但不要求在组字中(不组字时显示中/英提示用)。
+bool TextService::caretRect(EditSession* session, RECT* rect) const {
+    bool ret = false;
+    ComPtr<ITfContextView> view;
+    if(session->context()->GetActiveView(&view) == S_OK) {
+        BOOL clipped;
+        TF_SELECTION selection;
+        ULONG selectionNum;
+        if(session->context()->GetSelection(session->editCookie(), TF_DEFAULT_SELECTION, 1, &selection, &selectionNum) == S_OK) {
+            if(view->GetTextExt(session->editCookie(), selection.range, rect, &clipped) == S_OK)
+                ret = true;
+            selection.range->Release();
+        }
+    }
+    return ret;
+}
+
 HWND TextService::compositionWindow(EditSession* session) const {
     HWND hwnd = NULL;
     ComPtr<ITfContextView> view;
