@@ -97,6 +97,40 @@ int main() {
         s.keyDown(stashable('U', 0x00160001), 11);
         CHECK(s.discard() == 2 && s.idle());
     }
+    {   // 暂存中按下 Ctrl:吃掉、排在字母后只补发按下,立即补发
+        FirstKeyStash s;
+        s.keyDown(stashable('W'), 10);
+        StashDecision d = s.keyDown(normal(0xA2, KeyKind::Modifier), 20);
+        CHECK(d.eat && d.flush);
+        std::vector<StashKey> k = s.takeFlush(20);
+        CHECK(k.size() == 2 && k[0].vk == 'W' && !k[0].downOnly && k[1].vk == 0xA2 && k[1].downOnly);
+        std::vector<Stroke> r = buildReplay(k, false, false);
+        CHECK(r.size() == 3 && r[0].vk == 'W' && !r[0].up && r[1].vk == 'W' && r[1].up && r[2].vk == 0xA2 && !r[2].up);
+    }
+    {   // 在途时物理修饰键、方向键、自动重复不吃
+        FirstKeyStash s;
+        s.keyDown(stashable('D'), 10);
+        s.trigger(StashReason::Focus);
+        s.takeFlush(10);
+        CHECK(!s.keyDown(normal(0xA2, KeyKind::Modifier), 11).eat);
+        CHECK(!s.keyDown(normal(0x25, KeyKind::Other), 12).eat);
+        CHECK(!s.keyDown(normal('U', KeyKind::Letter, kRepeat), 13).eat);
+    }
+    {   // 下一个键吃掉并补发后,它的第二入口不重复入队
+        FirstKeyStash s;
+        s.keyDown(stashable('D'), 10);
+        CHECK(s.keyDown(normal('U'), 20).eat);
+        CHECK(s.takeFlush(20).size() == 2);
+        StashDecision d = s.keyDown(normal('U'), 20);
+        CHECK(d.eat && !d.flush);
+        CHECK(s.takeFlush(20).empty());
+    }
+    {   // 去重时间窗:同一键超过 50 ms 再来(抬起丢了)算新的一次
+        FirstKeyStash s;
+        s.keyDown(stashable('D'), 10);
+        s.keyDown(stashable('D'), 100);
+        CHECK(s.takeFlush(100).size() == 2);
+    }
     {   // 补发序列:无 Shift
         std::vector<Stroke> r = buildReplay({{'D', 0x01200001, false}}, false, false);
         CHECK(r.size() == 2 && r[0].vk == 'D' && !r[0].up && r[1].up && r[0].scan == 0x20 && r[0].extended);

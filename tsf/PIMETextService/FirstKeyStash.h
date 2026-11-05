@@ -11,13 +11,16 @@
 
 namespace PIME {
 
-// Text:数字、标点、空格、回车、退格(暂存期间吃掉、排队补发);Other:修饰键、F 键、方向键等(不吃,只触发补发)
-enum class KeyKind { Letter, Text, Other };
+// Text:数字、标点、空格、回车、退格(暂存期间吃掉、排队补发);
+// Modifier:Ctrl/Alt/Win 按下(暂存中吃掉、只补发按下、排在队尾、立即补发;Shift 不算,仍是 Other,补发时由 buildReplay 还原);
+// Other:Shift、F 键、方向键等(不吃,只触发补发)
+enum class KeyKind { Letter, Text, Modifier, Other };
 
 struct StashKey {
     uint32_t vk;
     uint32_t lParam;
     bool shift;  // 入队时 Shift 是否按着,补发时按此还原
+    bool downOnly;  // 只补发按下(修饰键,物理抬起照常放行)
 };
 
 struct KeyIn {
@@ -61,7 +64,7 @@ inline std::vector<Stroke> buildReplay(const std::vector<StashKey>& keys, bool l
         const uint32_t scan = (k.lParam >> 16) & 0xff;
         const bool ext = (k.lParam & (1u << 24)) != 0;
         s.push_back({k.vk, scan, ext, false});
-        s.push_back({k.vk, scan, ext, true});
+        if (!k.downOnly) s.push_back({k.vk, scan, ext, true});
     }
     if (shift) s.push_back({kL, kLScan, false, true});
     if (rshiftHeld) s.push_back({kR, kRScan, false, false});
@@ -73,10 +76,12 @@ class FirstKeyStash {
 public:
     static constexpr uint64_t kTimeoutMs = 500;
     static constexpr uint64_t kInFlightMaxMs = 1000;
+    static constexpr uint64_t kDupWindowMs = 50;  // 第二入口与第一入口的最大间隔
 
     StashDecision keyDown(const KeyIn& k, uint64_t nowMs) {
-        // 同一键先后经 OnTestKeyDown、OnKeyDown 到达:第二次沿用第一次的决定,不重复计数
-        if (hasLast_ && k.vk == lastVk_ && k.lParam == lastLParam_ && k.injected == lastInjected_) {
+        // 同一键先后经 OnTestKeyDown、OnKeyDown 到达(相隔 ≤ 50 ms):第二次沿用第一次的决定,不重复计数
+        if (hasLast_ && k.vk == lastVk_ && k.lParam == lastLParam_ && k.injected == lastInjected_ &&
+            nowMs - lastMs_ <= kDupWindowMs) {
             hasLast_ = false;
             return {lastEat_, false};
         }
@@ -86,6 +91,7 @@ public:
         lastLParam_ = k.lParam;
         lastInjected_ = k.injected;
         lastEat_ = d.eat;
+        lastMs_ = nowMs;
         return d;
     }
 
@@ -194,8 +200,9 @@ private:
                 }
                 return {};
             }
-            // 调用 SendInput 前已在队列里的物理键会先于注入键到达:文本类一律排到下一轮,保证顺序
-            if (k.kind != KeyKind::Other && !isRepeatKey(k.lParam)) {
+            // 调用 SendInput 前已在队列里的物理键会先于注入键到达:字母/文本类一律排到下一轮,保证顺序;
+            // 物理修饰键不吃(注入键已先于它排队,顺序无碍)
+            if ((k.kind == KeyKind::Letter || k.kind == KeyKind::Text) && !isRepeatKey(k.lParam)) {
                 push(k, nowMs);
                 return {true, false};
             }
@@ -206,7 +213,7 @@ private:
 
     void push(const KeyIn& k, uint64_t nowMs) {
         if (queue_.empty()) startMs_ = nowMs;
-        queue_.push_back({k.vk, k.lParam, k.shift});
+        queue_.push_back({k.vk, k.lParam, k.shift, k.kind == KeyKind::Modifier});
     }
 
     State state_ = State::Idle;
@@ -222,6 +229,7 @@ private:
     uint32_t lastLParam_ = 0;
     bool lastInjected_ = false;
     bool lastEat_ = false;
+    uint64_t lastMs_ = 0;
 };
 
 }
