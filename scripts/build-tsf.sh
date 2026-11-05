@@ -26,7 +26,7 @@ build() {  # build <x64|x86>
   OBJ=$SHIM/obj-$1; OUT=$OUTDIR/$1; mkdir -p "$OBJ" "$OUT"
   local CXXFLAGS="-std=c++17 -O2 -DUNICODE -D_UNICODE -DWIN32_LEAN_AND_MEAN -D_WIN32_WINNT=0x0600 -DNDEBUG
     -include tsf_compat.h -I$SHIM -I$SRC -I$SRC/libIME2/src -I$SRC/jsoncpp/include -I$SRC/PIMETextService"
-  for f in ImeModule libIME TextService TextServiceStash KeyEvent EditSession DisplayAttributeInfo DisplayAttributeInfoEnum \
+  for f in ImeModule libIME TextService TextServiceStash TextServiceKeyWatch KeyEvent EditSession DisplayAttributeInfo DisplayAttributeInfoEnum \
       DisplayAttributeProvider LangBarButton Utils DrawUtils Window ImeWindow MessageWindow CandidateWindow; do
     $T-g++ $CXXFLAGS -c "$SRC/libIME2/src/$f.cpp" -o "$OBJ/ime_$f.o"
   done
@@ -42,7 +42,7 @@ build() {  # build <x64|x86>
   # --kill-at:x86 导出名去掉 stdcall 修饰,与 .def 一致
   $T-g++ -shared -static -static-libgcc -static-libstdc++ -s -Wl,--kill-at -Wl,--subsystem,windows \
     -o "$OUT/$DLL" "$OBJ"/*.o "$SRC/PIMETextService/PIMETextService.def" \
-    -lole32 -loleaut32 -luuid -lshlwapi -lgdi32 -luser32 -ladvapi32 -lshell32
+    -lole32 -loleaut32 -luuid -lshlwapi -lgdi32 -luser32 -limm32 -ladvapi32 -lshell32
   if $T-objdump -p "$OUT/$DLL" | grep -E 'DLL Name: (libgcc|libstdc|libwinpthread)'; then
     echo "$1 DLL 依赖了 mingw 运行库,中止" >&2; exit 1
   fi

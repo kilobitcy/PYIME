@@ -202,6 +202,7 @@ void TextService::startComposition(ITfContext* context) {
 
 void TextService::endComposition(ITfContext* context) {
     assert(context);
+    lastCommitMs_ = ::GetTickCount64();  // PYIME:漏键诊断记"距上次上屏"
     HRESULT sessionResult;
     auto editSession = ComPtr<EditSession>::make(
         context,
@@ -533,6 +534,8 @@ void TextService::installEventListeners() {
     if (auto source = threadCompartment(GUID_COMPARTMENT_KEYBOARD_OPENCLOSE).query<ITfSource>()) {
         keyboardOPenCloseSink_ = SinkAdvice(source, IID_ITfCompartmentEventSink, (ITfCompartmentEventSink*)this);
     }
+
+    installKeyWatch();  // PYIME:漏键诊断
 }
 
 void TextService::uninstallEventListeners() {
@@ -552,6 +555,7 @@ void TextService::uninstallEventListeners() {
 
     // Keyboard open status change.
     keyboardOPenCloseSink_.unadvise();
+    uninstallKeyWatch();  // PYIME
 }
 
 void TextService::activateLanguageButtons() {

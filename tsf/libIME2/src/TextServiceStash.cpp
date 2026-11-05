@@ -51,6 +51,7 @@ DWORD TextService::stashCompartmentValue(const GUID& key, ITfContext* context) c
 
 // 返回 true 表示本次按键已处理完(*pfEaten 已设),调用方直接返回
 bool TextService::stashKeyDown(ITfContext* context, WPARAM wParam, LPARAM lParam, BOOL* pfEaten, bool fromTest) {
+    keyWatch_.sinkSaw((uint32_t)wParam, ::GetTickCount64());
     const bool injected = isInjected();
     if (injected && isShiftVk(wParam)) {  // 补发时临时抬起/按回的 Shift:不经服务端,免得被当成单击 Shift 切英文
         *pfEaten = FALSE;

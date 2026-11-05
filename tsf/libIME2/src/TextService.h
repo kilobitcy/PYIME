@@ -30,6 +30,7 @@
 #include "SinkAdvice.h"
 #include "ComObject.h"
 #include "FirstKeyStash.h"
+#include "MissedKeyWatch.h"
 
 #include <vector>
 #include <list>
@@ -306,6 +307,16 @@ private:
     uint32_t testLParam_ = 0;
     uint64_t testKeyMs_ = 0;
     bool stashSkipShiftUp_ = false;
+
+    // PYIME:漏键诊断(TextServiceKeyWatch.cpp)
+    void installKeyWatch();
+    void uninstallKeyWatch();
+    void keyWatchDown(WPARAM vk);
+    void keyWatchUp(WPARAM vk);
+    static LRESULT CALLBACK keyWatchProc(int code, WPARAM wParam, LPARAM lParam);
+    PIME::MissedKeyWatch keyWatch_;
+    HHOOK keyWatchHook_ = nullptr;
+    uint64_t lastCommitMs_ = 0;  // 最近一次组字结束(上屏)的时刻
 
     // event sink cookies
     SinkAdvice threadMgrEventSink_;
