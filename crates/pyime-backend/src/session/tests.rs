@@ -1271,3 +1271,24 @@ fn 按住shift打括号_注入回声后松开不切换() {
     assert_eq!(key(&mut s, "filterKeyUp", 16)["return"], false); // 用户松开
     assert_eq!(key(&mut s, "filterKeyDown", N)["return"], true); // 仍是中文
 }
+
+#[test]
+fn init回复带首键暂存开关_默认开() {
+    let mut s = session();
+    let r = s.handle(&json!({"method": "init", "seqNum": 1, "isWindows8Above": true}));
+    assert_eq!(r["firstKeyStash"], true);
+}
+
+#[test]
+fn fuzzy含首键暂存行即关闭_托盘重写后保留() {
+    let p = crate::ime::temp_user_path("stash-off");
+    let f = p.with_file_name("fuzzy.txt");
+    std::fs::write(&f, "首键暂存\n").unwrap();
+    let mut s = Session::new(Ime::with_user_path(engine(), p.clone()));
+    let r = s.handle(&json!({"method": "init", "seqNum": 1, "isWindows8Above": true}));
+    assert_eq!(r["firstKeyStash"], false);
+    assert_eq!(menu_cmd(&mut s, tray::CMD_TYPO)["return"], true);
+    assert_eq!(std::fs::read_to_string(&f).unwrap(), "纠错\n首键暂存\n");
+    assert_eq!(menu_cmd(&mut s, tray::CMD_FUZZY + 4)["return"], true);
+    assert_eq!(std::fs::read_to_string(&f).unwrap(), "r=l\n纠错\n首键暂存\n");
+}

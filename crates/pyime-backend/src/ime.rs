@@ -208,6 +208,13 @@ fn write_apps(p: &Path, apps: &ChineseApps) {
     }
 }
 
+/// `fuzzy.txt` 中表示关闭首键暂存补发的一行。属于前端功能,引擎不认识,由后端自己读写。
+const STASH_OFF: &str = "首键暂存";
+
+fn stash_off_in(text: &str) -> bool {
+    text.trim_start_matches('\u{feff}').lines().any(|l| l.trim() == STASH_OFF)
+}
+
 /// 读入模糊音开关;文件不存在时全开。
 fn read_fuzzy(engine: &mut Engine, user: Option<&Path>) {
     if let Some(t) = fuzzy_path(user).and_then(|p| read_optional(&p)) {
@@ -369,6 +376,11 @@ impl Ime {
         self.engine.borrow().fuzzy().clone()
     }
 
+    /// 首键暂存补发是否开启:`fuzzy.txt` 含 `首键暂存` 行即关闭。每次 `init` 现读,改文件后重启输入法生效。
+    pub fn first_key_stash(&self) -> bool {
+        !fuzzy_path(self.user_path.as_deref()).and_then(|p| read_optional(&p)).is_some_and(|t| stash_off_in(&t))
+    }
+
     /// 模糊音子菜单:切换第 `i` 对规则,即时生效并写 `fuzzy.txt`(与 `user.txt` 同目录)。
     pub fn toggle_fuzzy(&self, i: usize) {
         let mut cfg = self.fuzzy();
@@ -388,9 +400,14 @@ impl Ime {
 
     /// 启用新的模糊音/纠错配置并写 `fuzzy.txt`。
     fn apply_fuzzy(&self, cfg: FuzzyConfig) {
-        let text = cfg.export_off();
+        let mut text = cfg.export_off();
         self.engine.borrow_mut().set_fuzzy(cfg);
         let Some(path) = fuzzy_path(self.user_path.as_deref()) else { return };
+        // 托盘重写时保留用户手加的首键暂存开关
+        if read_optional(&path).is_some_and(|t| stash_off_in(&t)) {
+            text.push_str(STASH_OFF);
+            text.push('\n');
+        }
         let _ = path.parent().map(std::fs::create_dir_all);
         if let Err(e) = std::fs::write(&path, text) {
             crate::log::line(&format!("写入 {path:?} 失败: {e}"));

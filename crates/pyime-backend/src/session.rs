@@ -245,6 +245,7 @@ impl Session {
                 if let Some(english) = req["english"].as_bool() {
                     self.english = english;
                 }
+                resp["firstKeyStash"] = json!(self.ime.first_key_stash());
             }
             "onActivate" if self.win8 => {
                 resp["addButton"] = json!([tray::mode_button(self.english)]);
