@@ -145,7 +145,7 @@ git commit -m "后端:init 回复带首键暂存开关,fuzzy.txt 含「首键暂
 ---
 ### Task 2: 暂存状态机 `FirstKeyStash.h`
 
-> 复核后修订(2026-11-05,用户确认):新增 `KeyKind::Modifier` 与 `StashKey::downOnly`,去重加 50 ms 时间窗;以仓库中 `FirstKeyStash.h` 为准,下方代码为初版。
+> 复核后修订(2026-11-05,用户确认):`buildReplay` 改收 `HeldMods`(左右 Shift/Ctrl/Alt/Win),按着的修饰键先抬起、发完按回,抬起 Alt/Win 前发屏蔽键 0xE8;入口去重加 50 ms 时间窗;以仓库中 `FirstKeyStash.h` 为准,下方代码为初版。
 
 **Files:**
 - Create: `tsf/PIMETextService/FirstKeyStash.h`
@@ -774,14 +774,9 @@ thread_local TextService* t_stashOwner = nullptr;
 bool isInjected() { return (ULONG_PTR)::GetMessageExtraInfo() == kStashMagic; }
 bool isShiftVk(WPARAM vk) { return vk == VK_SHIFT || vk == VK_LSHIFT || vk == VK_RSHIFT; }
 bool held(int vk) { return ::GetKeyState(vk) < 0; }
-bool isModifierVk(WPARAM vk) {
-    return vk == VK_CONTROL || vk == VK_LCONTROL || vk == VK_RCONTROL || vk == VK_MENU || vk == VK_LMENU
-        || vk == VK_RMENU || vk == VK_LWIN || vk == VK_RWIN;
-}
+bool down(int vk) { return ::GetAsyncKeyState(vk) < 0; }
 
 PIME::KeyKind kindOf(WPARAM vk) {
-    if (isModifierVk(vk))
-        return PIME::KeyKind::Modifier;  // 暂存中吃下、排在字母后补发(先判:按下自身时 GetKeyState 可能已为按下)
     if (held(VK_CONTROL) || held(VK_MENU))
         return PIME::KeyKind::Other;  // 快捷键不吃
     if (vk >= 'A' && vk <= 'Z')
@@ -907,7 +902,9 @@ void TextService::flushStash() {
     onDiagnostic(line);
 
     std::vector<INPUT> inputs;
-    for (const PIME::Stroke& s : PIME::buildReplay(keys, ::GetAsyncKeyState(VK_LSHIFT) < 0, ::GetAsyncKeyState(VK_RSHIFT) < 0)) {
+    const PIME::HeldMods mods{down(VK_LSHIFT), down(VK_RSHIFT), down(VK_LCONTROL), down(VK_RCONTROL),
+        down(VK_LMENU), down(VK_RMENU), down(VK_LWIN), down(VK_RWIN)};
+    for (const PIME::Stroke& s : PIME::buildReplay(keys, mods)) {
         INPUT in{};
         in.type = INPUT_KEYBOARD;
         in.ki.wVk = (WORD)s.vk;
