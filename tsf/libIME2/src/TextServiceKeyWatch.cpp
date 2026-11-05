@@ -16,6 +16,8 @@ void TextService::installKeyWatch() {
         return;
     t_watchOwner = this;
     keyWatchHook_ = ::SetWindowsHookExW(WH_GETMESSAGE, keyWatchProc, nullptr, ::GetCurrentThreadId());
+    if (!keyWatchHook_)
+        onDiagnostic("漏键诊断:钩子安装失败");
 }
 
 void TextService::uninstallKeyWatch() {
@@ -28,7 +30,7 @@ void TextService::uninstallKeyWatch() {
 }
 
 LRESULT CALLBACK TextService::keyWatchProc(int code, WPARAM wParam, LPARAM lParam) {
-    if (code == HC_ACTION && wParam == PM_REMOVE && t_watchOwner) {
+    if (code == HC_ACTION && (wParam & PM_REMOVE) && t_watchOwner) {
         const MSG* msg = reinterpret_cast<const MSG*>(lParam);
         if (msg->message == WM_KEYDOWN)
             t_watchOwner->keyWatchDown(msg->wParam);
