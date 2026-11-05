@@ -97,22 +97,19 @@ int main() {
         s.keyDown(stashable('U', 0x00160001), 11);
         CHECK(s.discard() == 2 && s.idle());
     }
-    {   // 暂存中按下 Ctrl:吃掉、排在字母后只补发按下,立即补发
+    {   // 暂存中按下 Ctrl(Other):不吃,立即补发
         FirstKeyStash s;
         s.keyDown(stashable('W'), 10);
-        StashDecision d = s.keyDown(normal(0xA2, KeyKind::Modifier), 20);
-        CHECK(d.eat && d.flush);
-        std::vector<StashKey> k = s.takeFlush(20);
-        CHECK(k.size() == 2 && k[0].vk == 'W' && !k[0].downOnly && k[1].vk == 0xA2 && k[1].downOnly);
-        std::vector<Stroke> r = buildReplay(k, false, false);
-        CHECK(r.size() == 3 && r[0].vk == 'W' && !r[0].up && r[1].vk == 'W' && r[1].up && r[2].vk == 0xA2 && !r[2].up);
+        StashDecision d = s.keyDown(normal(0xA2, KeyKind::Other), 20);
+        CHECK(!d.eat && d.flush && s.reason() == StashReason::NextKey);
+        CHECK(s.takeFlush(20).size() == 1);
     }
     {   // 在途时物理修饰键、方向键、自动重复不吃
         FirstKeyStash s;
         s.keyDown(stashable('D'), 10);
         s.trigger(StashReason::Focus);
         s.takeFlush(10);
-        CHECK(!s.keyDown(normal(0xA2, KeyKind::Modifier), 11).eat);
+        CHECK(!s.keyDown(normal(0xA2, KeyKind::Other), 11).eat);
         CHECK(!s.keyDown(normal(0x25, KeyKind::Other), 12).eat);
         CHECK(!s.keyDown(normal('U', KeyKind::Letter, kRepeat), 13).eat);
     }
@@ -132,18 +129,32 @@ int main() {
         CHECK(s.takeFlush(100).size() == 2);
     }
     {   // 补发序列:无 Shift
-        std::vector<Stroke> r = buildReplay({{'D', 0x01200001, false}}, false, false);
+        std::vector<Stroke> r = buildReplay({{'D', 0x01200001, false}}, HeldMods{});
         CHECK(r.size() == 2 && r[0].vk == 'D' && !r[0].up && r[1].up && r[0].scan == 0x20 && r[0].extended);
     }
     {   // 补发序列:用户按着左 Shift,暂存键无 Shift → 先抬起、发完按回
-        std::vector<Stroke> r = buildReplay({{'D', kLp, false}}, true, false);
+        std::vector<Stroke> r = buildReplay({{'D', kLp, false}}, HeldMods{true, false, false, false, false, false, false, false});
         CHECK(r.size() == 4 && r[0].vk == 0xA0 && r[0].up && r[1].vk == 'D' && r[3].vk == 0xA0 && !r[3].up);
     }
     {   // 补发序列:暂存键带 Shift、用户已松开 → 临时按下、发完抬起;右 Shift 按着时最后按回
-        std::vector<Stroke> r = buildReplay({{'U', kLp, true}}, false, true);
+        std::vector<Stroke> r = buildReplay({{'U', kLp, true}}, HeldMods{false, true, false, false, false, false, false, false});
         CHECK(r.size() == 6);
         CHECK(r[0].vk == 0xA1 && r[0].up && r[1].vk == 0xA0 && !r[1].up && r[2].vk == 'U');
         CHECK(r[4].vk == 0xA0 && r[4].up && r[5].vk == 0xA1 && !r[5].up);
+    }
+    {   // 按着左 Ctrl:先抬起、发完按回,无屏蔽键
+        std::vector<Stroke> r = buildReplay({{'W', kLp, false}}, HeldMods{false, false, true, false, false, false, false, false});
+        CHECK(r.size() == 4 && r[0].vk == 0xA2 && r[0].up && r[1].vk == 'W' && r[3].vk == 0xA2 && !r[3].up);
+    }
+    {   // 按着左 Alt:先发屏蔽键 0xE8,再抬起 Alt,发完按回
+        std::vector<Stroke> r = buildReplay({{'W', kLp, false}}, HeldMods{false, false, false, false, true, false, false, false});
+        CHECK(r.size() == 6 && r[0].vk == 0xE8 && !r[0].up && r[1].vk == 0xE8 && r[1].up);
+        CHECK(r[2].vk == 0xA4 && r[2].up && r[3].vk == 'W' && r[5].vk == 0xA4 && !r[5].up);
+    }
+    {   // 按着右 Win 与左 Shift:一次屏蔽键;抬起顺序 Shift、Win,按回顺序 Win、Shift;右 Win 为扩展键
+        std::vector<Stroke> r = buildReplay({{'W', kLp, false}}, HeldMods{true, false, false, false, false, false, false, true});
+        CHECK(r.size() == 8 && r[0].vk == 0xE8 && r[2].vk == 0xA0 && r[2].up && r[3].vk == 0x5C && r[3].up && r[3].extended);
+        CHECK(r[4].vk == 'W' && r[6].vk == 0x5C && !r[6].up && r[7].vk == 0xA0 && !r[7].up);
     }
     if (failures == 0) std::printf("first_key_stash_test: 全部通过\n");
     return failures == 0 ? 0 : 1;

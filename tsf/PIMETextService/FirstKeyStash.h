@@ -12,15 +12,13 @@
 namespace PIME {
 
 // Text:数字、标点、空格、回车、退格(暂存期间吃掉、排队补发);
-// Modifier:Ctrl/Alt/Win 按下(暂存中吃掉、只补发按下、排在队尾、立即补发;Shift 不算,仍是 Other,补发时由 buildReplay 还原);
-// Other:Shift、F 键、方向键等(不吃,只触发补发)
-enum class KeyKind { Letter, Text, Modifier, Other };
+// Other:修饰键、F 键、方向键等(不吃,只触发补发)
+enum class KeyKind { Letter, Text, Other };
 
 struct StashKey {
     uint32_t vk;
     uint32_t lParam;
     bool shift;  // 入队时 Shift 是否按着,补发时按此还原
-    bool downOnly;  // 只补发按下(修饰键,物理抬起照常放行)
 };
 
 struct KeyIn {
@@ -49,12 +47,30 @@ struct Stroke {
     bool up;
 };
 
-// 补发序列:先抬起用户按着的 Shift,逐键按入队时的 Shift 状态临时按下/抬起左 Shift,最后还原。
-inline std::vector<Stroke> buildReplay(const std::vector<StashKey>& keys, bool lshiftHeld, bool rshiftHeld) {
-    constexpr uint32_t kL = 0xA0, kLScan = 0x2A, kR = 0xA1, kRScan = 0x36;
+// 补发时用户按着的修饰键(调用方按 GetAsyncKeyState 的系统实时状态填)
+struct HeldMods {
+    bool lshift, rshift, lctrl, rctrl, lalt, ralt, lwin, rwin;
+};
+
+// 补发序列:先抬起用户按着的修饰键(抬起 Alt/Win 前先发一次未分配键 0xE8 作屏蔽键,免得激活菜单栏/弹开始菜单),
+// 逐键按入队时的 Shift 状态临时按下/抬起左 Shift,最后按相反顺序按回。程序取出按键消息时即更新键状态,
+// 所以不能靠吃掉修饰键,必须注入抬起;按实时状态决定按回,物理抬起已发生就不按回,不会卡键。
+inline std::vector<Stroke> buildReplay(const std::vector<StashKey>& keys, const HeldMods& held) {
+    struct Mod { bool on; uint32_t vk, scan; bool ext; };
+    const Mod mods[] = {
+        {held.lshift, 0xA0, 0x2A, false}, {held.rshift, 0xA1, 0x36, false},
+        {held.lctrl, 0xA2, 0x1D, false},  {held.rctrl, 0xA3, 0x1D, true},
+        {held.lalt, 0xA4, 0x38, false},   {held.ralt, 0xA5, 0x38, true},
+        {held.lwin, 0x5B, 0x5B, true},    {held.rwin, 0x5C, 0x5C, true},
+    };
+    constexpr uint32_t kMask = 0xE8, kL = 0xA0, kLScan = 0x2A;
     std::vector<Stroke> s;
-    if (lshiftHeld) s.push_back({kL, kLScan, false, true});
-    if (rshiftHeld) s.push_back({kR, kRScan, false, true});
+    if (held.lalt || held.ralt || held.lwin || held.rwin) {
+        s.push_back({kMask, 0, false, false});
+        s.push_back({kMask, 0, false, true});
+    }
+    for (const Mod& m : mods)
+        if (m.on) s.push_back({m.vk, m.scan, m.ext, true});
     bool shift = false;
     for (const StashKey& k : keys) {
         if (k.shift != shift) {
@@ -64,11 +80,11 @@ inline std::vector<Stroke> buildReplay(const std::vector<StashKey>& keys, bool l
         const uint32_t scan = (k.lParam >> 16) & 0xff;
         const bool ext = (k.lParam & (1u << 24)) != 0;
         s.push_back({k.vk, scan, ext, false});
-        if (!k.downOnly) s.push_back({k.vk, scan, ext, true});
+        s.push_back({k.vk, scan, ext, true});
     }
     if (shift) s.push_back({kL, kLScan, false, true});
-    if (rshiftHeld) s.push_back({kR, kRScan, false, false});
-    if (lshiftHeld) s.push_back({kL, kLScan, false, false});
+    for (int i = (int)(sizeof(mods) / sizeof(mods[0])) - 1; i >= 0; --i)
+        if (mods[i].on) s.push_back({mods[i].vk, mods[i].scan, mods[i].ext, false});
     return s;
 }
 
@@ -213,7 +229,7 @@ private:
 
     void push(const KeyIn& k, uint64_t nowMs) {
         if (queue_.empty()) startMs_ = nowMs;
-        queue_.push_back({k.vk, k.lParam, k.shift, k.kind == KeyKind::Modifier});
+        queue_.push_back({k.vk, k.lParam, k.shift});
     }
 
     State state_ = State::Idle;
