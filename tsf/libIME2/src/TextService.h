@@ -299,6 +299,7 @@ private:
     PIME::FirstKeyStash stash_;
     UINT_PTR stashTimer_ = 0;
     ComPtr<ITfContext> stashContext_;
+    ComPtr<ITfContext> stashSkipContext_;  // 补发后仍为禁用+空的上下文,焦点切换前不再暂存
     SinkAdvice stashDisabledSink_;
     SinkAdvice stashEmptySink_;
     bool stashPassLogged_ = false;

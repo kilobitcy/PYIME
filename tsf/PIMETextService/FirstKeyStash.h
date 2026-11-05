@@ -11,8 +11,9 @@
 
 namespace PIME {
 
-// Text:数字、标点、空格、回车、退格(暂存期间吃掉、排队补发);
-// Other:修饰键、F 键、方向键等(不吃,只触发补发)
+// Text:数字、标点、空格、回车、退格,以及编辑/导航键(Tab、Esc、Delete、Insert、方向键、Home/End、PgUp/PgDn),
+//   暂存期间吃掉、排队补发;
+// Other:修饰键、Win/Apps、F 键、媒体键等(不吃,只触发补发)
 enum class KeyKind { Letter, Text, Other };
 
 struct StashKey {
@@ -125,7 +126,8 @@ public:
         return true;
     }
 
-    // 定时轮询:暂存超时返回 true;在途超时放弃在途(takeAbandoned 为真),有下一轮键时返回 true
+    // 定时轮询:暂存超时返回 true;在途超时放弃在途(takeAbandoned 为真),有下一轮键时返回 true。
+    // 放弃在途后本对象停用暂存(off):补发标记可能失效,再暂存会吃键—重发无限循环
     bool poll(uint64_t nowMs) {
         if (state_ == State::Stashing && nowMs - startMs_ >= kTimeoutMs) {
             reason_ = StashReason::Timeout;
@@ -133,6 +135,7 @@ public:
         }
         if (state_ == State::InFlight && nowMs - inFlightSinceMs_ >= kInFlightMaxMs) {
             abandoned_ = true;
+            off_ = true;
             inFlightLeft_ = 0;
             state_ = queue_.empty() ? State::Idle : State::Stashing;
             reason_ = StashReason::NextKey;
@@ -150,6 +153,10 @@ public:
             return keys;
         }
         waitedMs_ = nowMs - startMs_;
+        if (off_) {  // 已停用:补发后不再等注入键回来
+            state_ = State::Idle;
+            return keys;
+        }
         state_ = State::InFlight;
         inFlightLeft_ = keys.size();
         inFlightSinceMs_ = nowMs;
@@ -163,9 +170,11 @@ public:
         state_ = State::Idle;
         inFlightLeft_ = 0;
         hasLast_ = false;
+        abandoned_ = false;
         return n;
     }
 
+    bool off() const { return off_; }
     bool idle() const { return state_ == State::Idle; }
     bool stashing() const { return state_ == State::Stashing; }
     bool inFlight() const { return state_ == State::InFlight; }
@@ -181,6 +190,7 @@ private:
     enum class State { Idle, Stashing, InFlight };
 
     StashDecision decide(const KeyIn& k, uint64_t nowMs) {
+        if (off_) return {};
         switch (state_) {
         case State::Idle:
             if (!k.injected && k.stashable) {
@@ -243,6 +253,7 @@ private:
     size_t inFlightLeft_ = 0;
     StashReason reason_ = StashReason::Timeout;
     bool abandoned_ = false;
+    bool off_ = false;
     bool hasLast_ = false;
     uint32_t lastVk_ = 0;
     uint32_t lastLParam_ = 0;

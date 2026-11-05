@@ -77,6 +77,9 @@ int main() {
         CHECK(!s.poll(1009));
         CHECK(!s.poll(1010) && s.takeAbandoned() && s.idle());
         CHECK(!s.takeAbandoned());
+    }
+    {   // 放弃在途时有下一轮键:要求补发(新对象,放弃后旧对象已停用)
+        FirstKeyStash s;
         s.keyDown(stashable('A'), 2000);
         s.trigger(StashReason::Focus);
         s.takeFlush(2000);
@@ -125,6 +128,26 @@ int main() {
         StashDecision d = s.keyDown(injected('W'), 13);
         CHECK(!d.eat && d.flush);
         CHECK(s.takeFlush(13).size() == 1);
+    }
+    {   // 在途 1 s 未收齐:放弃,下一轮补发一次且不再进在途,此后停用暂存
+        FirstKeyStash s;
+        s.keyDown(stashable('D'), 10);
+        s.trigger(StashReason::Focus);
+        s.takeFlush(10);
+        CHECK(s.keyDown(normal('U'), 20).eat);
+        CHECK(s.poll(1011) && s.takeAbandoned() && s.off());
+        CHECK(s.takeFlush(1011).size() == 1 && s.idle());
+        CHECK(!s.keyDown(stashable('X'), 1020).eat && s.idle());
+        CHECK(!s.keyDown(normal('U'), 1030).eat);
+        s.discard();
+        CHECK(s.off());
+    }
+    {   // 在途放弃时没有下一轮:回到空闲、停用
+        FirstKeyStash s;
+        s.keyDown(stashable('D'), 10);
+        s.trigger(StashReason::Focus);
+        s.takeFlush(10);
+        CHECK(!s.poll(1010) && s.takeAbandoned() && s.off() && s.idle());
     }
     {   // 补发序列:按着左 Ctrl、暂存键带 Shift 且用户已松开 Shift → Ctrl 抬、Shift 按、键、Shift 抬、Ctrl 按
         std::vector<Stroke> r = buildReplay({{'U', kLp, true}}, HeldMods{false, false, true, false, false, false, false, false});

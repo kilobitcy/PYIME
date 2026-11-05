@@ -656,6 +656,7 @@ STDMETHODIMP TextService::OnUninitDocumentMgr(ITfDocumentMgr *pDocMgr) {
 
 STDMETHODIMP TextService::OnSetFocus(ITfDocumentMgr *pDocMgrFocus, ITfDocumentMgr *pDocMgrPrevFocus) {
     // PYIME:焦点切到新文档,暂存的首键立即补发
+    stashSkipContext_ = nullptr;  // PYIME:焦点切换,重新允许暂存
     if (pDocMgrFocus && stash_.trigger(PIME::StashReason::Focus))
         flushStash();
     syncStash();

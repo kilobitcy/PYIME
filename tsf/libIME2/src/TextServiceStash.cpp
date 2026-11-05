@@ -10,6 +10,7 @@ namespace {
 
 constexpr ULONG_PTR kStashMagic = 0x50594D45;  // "PYME":补发按键的 dwExtraInfo 标记
 constexpr UINT kStashPollMs = 50;
+constexpr const char* kStashAbandonText = "首键暂存:补发的键 1 s 内未收齐,放弃在途,本会话停用暂存";
 // TIMERPROC 在建定时器的线程上执行,每线程至多一个 TextService
 thread_local TextService* t_stashOwner = nullptr;
 
@@ -21,6 +22,10 @@ bool down(int vk) { return ::GetAsyncKeyState(vk) < 0; }
 PIME::KeyKind kindOf(WPARAM vk) {
     if (held(VK_CONTROL) || held(VK_MENU))
         return PIME::KeyKind::Other;  // 快捷键不吃
+    // 编辑/导航键:吃掉排队、原序补发,免得 Tab 抢在字母前把焦点带走
+    if (vk == VK_TAB || vk == VK_ESCAPE || vk == VK_DELETE || vk == VK_INSERT || vk == VK_PRIOR || vk == VK_NEXT
+        || vk == VK_END || vk == VK_HOME || vk == VK_LEFT || vk == VK_UP || vk == VK_RIGHT || vk == VK_DOWN)
+        return PIME::KeyKind::Text;
     if (vk >= 'A' && vk <= 'Z')
         return PIME::KeyKind::Letter;
     if ((vk >= '0' && vk <= '9') || (vk >= VK_NUMPAD0 && vk <= VK_DIVIDE) || vk == VK_SPACE || vk == VK_RETURN
@@ -58,10 +63,11 @@ bool TextService::stashKeyDown(ITfContext* context, WPARAM wParam, LPARAM lParam
         return true;
     }
     const uint64_t now = ::GetTickCount64();
-    if (stash_.poll(now))
+    const bool pollFlush = stash_.poll(now);
+    if (stash_.takeAbandoned())  // 先取放弃标记:flushStash 可能 discard,discard 会清它
+        onDiagnostic(kStashAbandonText);
+    if (pollFlush)
         flushStash();
-    if (stash_.takeAbandoned())
-        onDiagnostic("首键暂存:补发的键 1 s 内未收齐,放弃在途");
 
     const bool blocked = isKeyboardDisabled(context) || !isKeyboardOpened();
     PIME::KeyIn k{};
@@ -73,7 +79,8 @@ bool TextService::stashKeyDown(ITfContext* context, WPARAM wParam, LPARAM lParam
     k.stashable = !injected && k.kind == PIME::KeyKind::Letter && !k.shift && !PIME::isRepeatKey(k.lParam)
         && firstKeyStashEnabled() && isChineseMode() && !isComposing() && isKeyboardOpened()
         && stashCompartmentValue(GUID_COMPARTMENT_KEYBOARD_DISABLED, context) != 0
-        && stashCompartmentValue(GUID_COMPARTMENT_EMPTYCONTEXT, context) != 0;
+        && stashCompartmentValue(GUID_COMPARTMENT_EMPTYCONTEXT, context) != 0
+        && !(stashSkipContext_ && context == stashSkipContext_);
 
     const bool wasIdle = stash_.idle();
     // OnTestKeyDown 与 OnKeyDown 之间夹着 filterKeyDown RPC,可能超过状态机 50 ms 去重窗:
@@ -90,6 +97,12 @@ bool TextService::stashKeyDown(ITfContext* context, WPARAM wParam, LPARAM lParam
         keyMs = testKeyMs_;
     }
     const PIME::StashDecision d = stash_.keyDown(k, keyMs);
+    if (injected && !d.eat && context && stashSkipContext_ != context
+        && stashCompartmentValue(GUID_COMPARTMENT_KEYBOARD_DISABLED, context) != 0
+        && stashCompartmentValue(GUID_COMPARTMENT_EMPTYCONTEXT, context) != 0) {
+        stashSkipContext_ = context;
+        onDiagnostic("首键暂存:补发后仍为禁用上下文,焦点切换前不再暂存");
+    }
     if (wasIdle && stash_.stashing())
         watchStashContext(context);
     if (d.flush)
@@ -197,6 +210,7 @@ void TextService::discardStash(const char* why) {
         onDiagnostic(line);
     }
     stashSkipShiftUp_ = false;
+    stashSkipContext_ = nullptr;
     syncStash();
 }
 
@@ -225,10 +239,11 @@ void CALLBACK TextService::onStashTimer(HWND, UINT, UINT_PTR, DWORD) {
     TextService* self = t_stashOwner;
     if (!self)
         return;
-    if (self->stash_.poll(::GetTickCount64()))
-        self->flushStash();
+    const bool pollFlush = self->stash_.poll(::GetTickCount64());
     if (self->stash_.takeAbandoned())
-        self->onDiagnostic("首键暂存:补发的键 1 s 内未收齐,放弃在途");
+        self->onDiagnostic(kStashAbandonText);
+    if (pollFlush)
+        self->flushStash();
     self->syncStash();
 }
 
