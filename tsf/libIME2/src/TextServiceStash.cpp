@@ -41,8 +41,16 @@ const char* reasonText(PIME::StashReason r) {
 
 }  // namespace
 
+// 取指定上下文的隔间值(既有 contextCompartmentValue 忽略 context 参数,查的是焦点上下文)
+DWORD TextService::stashCompartmentValue(const GUID& key, ITfContext* context) const {
+    if (!context)
+        return 0;
+    auto compartment = contextCompartment(key, context);
+    return compartment ? compartmentValue(compartment) : 0;
+}
+
 // 返回 true 表示本次按键已处理完(*pfEaten 已设),调用方直接返回
-bool TextService::stashKeyDown(ITfContext* context, WPARAM wParam, LPARAM lParam, BOOL* pfEaten) {
+bool TextService::stashKeyDown(ITfContext* context, WPARAM wParam, LPARAM lParam, BOOL* pfEaten, bool fromTest) {
     const bool injected = isInjected();
     if (injected && isShiftVk(wParam)) {  // 补发时临时抬起/按回的 Shift:不经服务端,免得被当成单击 Shift 切英文
         *pfEaten = FALSE;
@@ -63,17 +71,32 @@ bool TextService::stashKeyDown(ITfContext* context, WPARAM wParam, LPARAM lParam
     k.injected = injected;
     k.stashable = !injected && k.kind == PIME::KeyKind::Letter && !k.shift && !PIME::isRepeatKey(k.lParam)
         && firstKeyStashEnabled() && isChineseMode() && !isComposing() && isKeyboardOpened()
-        && contextCompartmentValue(GUID_COMPARTMENT_KEYBOARD_DISABLED, context) != 0
-        && contextCompartmentValue(GUID_COMPARTMENT_EMPTYCONTEXT, context) != 0;
+        && stashCompartmentValue(GUID_COMPARTMENT_KEYBOARD_DISABLED, context) != 0
+        && stashCompartmentValue(GUID_COMPARTMENT_EMPTYCONTEXT, context) != 0;
 
     const bool wasIdle = stash_.idle();
-    const PIME::StashDecision d = stash_.keyDown(k, now);
+    // OnTestKeyDown 与 OnKeyDown 之间夹着 filterKeyDown RPC,可能超过状态机 50 ms 去重窗:
+    // 同一键在 OnKeyDown 里沿用 OnTestKeyDown 的时刻
+    uint64_t keyMs = now;
+    if (fromTest) {
+        hasTestKey_ = true;
+        testVk_ = (uint32_t)wParam;
+        testLParam_ = (uint32_t)lParam;
+        testKeyMs_ = now;
+    }
+    else if (hasTestKey_ && testVk_ == (uint32_t)wParam && testLParam_ == (uint32_t)lParam) {
+        hasTestKey_ = false;
+        keyMs = testKeyMs_;
+    }
+    const PIME::StashDecision d = stash_.keyDown(k, keyMs);
     if (wasIdle && stash_.stashing())
         watchStashContext(context);
     if (d.flush)
         flushStash();
     syncStash();
     if (d.eat) {
+        if (!injected && k.shift)
+            stashSkipShiftUp_ = true;  // 物理 Shift 抬起放行给程序、不经服务端,免得被当成单击 Shift 切英文
         *pfEaten = TRUE;
         return true;
     }
@@ -89,10 +112,18 @@ bool TextService::stashKeyDown(ITfContext* context, WPARAM wParam, LPARAM lParam
 }
 
 bool TextService::stashKeyUp(WPARAM wParam, BOOL* pfEaten) {
-    if (isInjected() && isShiftVk(wParam)) {
+    const bool injected = isInjected();
+    if (injected && isShiftVk(wParam)) {  // 补发时注入的 Shift:不经服务端
         *pfEaten = FALSE;
         return true;
     }
+    if (!injected && isShiftVk(wParam) && stashSkipShiftUp_) {
+        stashSkipShiftUp_ = false;
+        *pfEaten = FALSE;
+        return true;
+    }
+    if (hasTestKey_ && testVk_ == (uint32_t)wParam)
+        hasTestKey_ = false;
     stash_.keyUp((uint32_t)wParam);
     return false;
 }
@@ -113,7 +144,7 @@ void TextService::watchStashContext(ITfContext* context) {
 bool TextService::stashCompartmentChanged(REFGUID rguid) {
     if (!IsEqualGUID(rguid, GUID_COMPARTMENT_KEYBOARD_DISABLED) && !IsEqualGUID(rguid, GUID_COMPARTMENT_EMPTYCONTEXT))
         return false;
-    if (stashContext_ && contextCompartmentValue(rguid, stashContext_) == 0
+    if (stashContext_ && stashCompartmentValue(rguid, stashContext_) == 0
         && stash_.trigger(PIME::StashReason::Compartment))
         flushStash();
     syncStash();
@@ -164,6 +195,7 @@ void TextService::discardStash(const char* why) {
         std::snprintf(line, sizeof(line), "首键暂存:%s,丢弃 %u 键", why, (unsigned)n);
         onDiagnostic(line);
     }
+    stashSkipShiftUp_ = false;
     syncStash();
 }
 

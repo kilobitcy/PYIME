@@ -746,7 +746,7 @@ void TextService::reportPassThrough(ITfContext* context, WPARAM wParam) {
 }
 
 STDMETHODIMP TextService::OnTestKeyDown(ITfContext *pContext, WPARAM wParam, LPARAM lParam, BOOL *pfEaten) {
-    if (stashKeyDown(pContext, wParam, lParam, pfEaten))  // PYIME:首键暂存
+    if (stashKeyDown(pContext, wParam, lParam, pfEaten, true))  // PYIME:首键暂存
         return S_OK;
     if (isKeyboardDisabled(pContext) || !isKeyboardOpened()) {
         *pfEaten = FALSE;
@@ -761,7 +761,7 @@ STDMETHODIMP TextService::OnTestKeyDown(ITfContext *pContext, WPARAM wParam, LPA
 }
 
 STDMETHODIMP TextService::OnKeyDown(ITfContext *pContext, WPARAM wParam, LPARAM lParam, BOOL *pfEaten) {
-    if (stashKeyDown(pContext, wParam, lParam, pfEaten))  // PYIME:首键暂存
+    if (stashKeyDown(pContext, wParam, lParam, pfEaten, false))  // PYIME:首键暂存
         return S_OK;
     // Some applications do not trigger OnTestKeyDown()
     // So we need to test it again here! Windows TSF sucks!

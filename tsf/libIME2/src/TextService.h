@@ -286,7 +286,8 @@ private:
     void reportPassThrough(ITfContext* context, WPARAM wParam);
 
     // PYIME:首键暂存补发(TextServiceStash.cpp)
-    bool stashKeyDown(ITfContext* context, WPARAM wParam, LPARAM lParam, BOOL* pfEaten);
+    bool stashKeyDown(ITfContext* context, WPARAM wParam, LPARAM lParam, BOOL* pfEaten, bool fromTest);
+    DWORD stashCompartmentValue(const GUID& key, ITfContext* context) const;
     bool stashKeyUp(WPARAM wParam, BOOL* pfEaten);
     void watchStashContext(ITfContext* context);
     void flushStash();
@@ -300,6 +301,11 @@ private:
     SinkAdvice stashDisabledSink_;
     SinkAdvice stashEmptySink_;
     bool stashPassLogged_ = false;
+    bool hasTestKey_ = false;
+    uint32_t testVk_ = 0;
+    uint32_t testLParam_ = 0;
+    uint64_t testKeyMs_ = 0;
+    bool stashSkipShiftUp_ = false;
 
     // event sink cookies
     SinkAdvice threadMgrEventSink_;
