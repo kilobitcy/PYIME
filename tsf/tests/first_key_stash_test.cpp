@@ -113,6 +113,24 @@ int main() {
         CHECK(!s.keyDown(normal(0x25, KeyKind::Other), 12).eat);
         CHECK(!s.keyDown(normal('U', KeyKind::Letter, kRepeat), 13).eat);
     }
+    {   // 注入的屏蔽键、修饰键(Other)不计入在途:之后的物理字母仍排到下一轮
+        FirstKeyStash s;
+        s.keyDown(stashable('W'), 10);
+        s.trigger(StashReason::Focus);
+        s.takeFlush(10);
+        KeyIn mask{0xE8, kLp, KeyKind::Other, false, true, false};
+        CHECK(!s.keyDown(mask, 11).flush && s.inFlight());
+        CHECK(s.keyDown(normal('X'), 12).eat);
+        s.keyUp('X');
+        StashDecision d = s.keyDown(injected('W'), 13);
+        CHECK(!d.eat && d.flush);
+        CHECK(s.takeFlush(13).size() == 1);
+    }
+    {   // 补发序列:按着左 Ctrl、暂存键带 Shift 且用户已松开 Shift → Ctrl 抬、Shift 按、键、Shift 抬、Ctrl 按
+        std::vector<Stroke> r = buildReplay({{'U', kLp, true}}, HeldMods{false, false, true, false, false, false, false, false});
+        CHECK(r.size() == 6 && r[0].vk == 0xA2 && r[0].up && r[1].vk == 0xA0 && !r[1].up && r[2].vk == 'U');
+        CHECK(r[4].vk == 0xA0 && r[4].up && r[5].vk == 0xA2 && !r[5].up);
+    }
     {   // 下一个键吃掉并补发后,它的第二入口不重复入队
         FirstKeyStash s;
         s.keyDown(stashable('D'), 10);

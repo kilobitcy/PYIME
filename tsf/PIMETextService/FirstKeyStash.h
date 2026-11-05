@@ -55,6 +55,8 @@ struct HeldMods {
 // 补发序列:先抬起用户按着的修饰键(抬起 Alt/Win 前先发一次未分配键 0xE8 作屏蔽键,免得激活菜单栏/弹开始菜单),
 // 逐键按入队时的 Shift 状态临时按下/抬起左 Shift,最后按相反顺序按回。程序取出按键消息时即更新键状态,
 // 所以不能靠吃掉修饰键,必须注入抬起;按实时状态决定按回,物理抬起已发生就不按回,不会卡键。
+// 注意:采样(GetAsyncKeyState)与 SendInput 之间若用户恰好松开修饰键,该键会逻辑上停在按下,
+// 直到下次按下再松开;调用方应让采样紧贴 SendInput。
 inline std::vector<Stroke> buildReplay(const std::vector<StashKey>& keys, const HeldMods& held) {
     struct Mod { bool on; uint32_t vk, scan; bool ext; };
     const Mod mods[] = {
@@ -205,7 +207,8 @@ private:
             return {false, true};
         case State::InFlight:
             if (k.injected) {
-                if (inFlightLeft_ > 0 && --inFlightLeft_ == 0) {
+                // 屏蔽键 0xE8、修饰键等不在队列里的注入键(Other)不计数,否则会提前结束在途、打乱顺序
+                if (k.kind != KeyKind::Other && inFlightLeft_ > 0 && --inFlightLeft_ == 0) {
                     if (queue_.empty()) {
                         state_ = State::Idle;
                         return {};
