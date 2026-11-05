@@ -57,6 +57,8 @@ g++ -std=c++17 -Wall -I"$SRC/PIMETextService" "$SRC/tests/backoff_test.cpp" -o "
 "$SHIM/backoff_test"
 g++ -std=c++17 -Wall -I"$SRC/PIMETextService" "$SRC/tests/rpc_retry_test.cpp" -o "$SHIM/rpc_retry_test"
 "$SHIM/rpc_retry_test"
+g++ -std=c++17 -Wall -I"$SRC/PIMETextService" "$SRC/tests/first_key_stash_test.cpp" -o "$SHIM/first_key_stash_test"
+"$SHIM/first_key_stash_test"
 
 build x64
 build x86
