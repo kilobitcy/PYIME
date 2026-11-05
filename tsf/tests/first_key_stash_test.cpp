@@ -149,6 +149,15 @@ int main() {
         s.takeFlush(10);
         CHECK(!s.poll(1010) && s.takeAbandoned() && s.off() && s.idle());
     }
+    {   // discard 清掉未取的放弃标记(补发前 discard 时不留陈旧日志)
+        FirstKeyStash s;
+        s.keyDown(stashable('D'), 10);
+        s.trigger(StashReason::Focus);
+        s.takeFlush(10);
+        s.poll(1010);
+        s.discard();
+        CHECK(!s.takeAbandoned() && s.off());
+    }
     {   // 补发序列:按着左 Ctrl、暂存键带 Shift 且用户已松开 Shift → Ctrl 抬、Shift 按、键、Shift 抬、Ctrl 按
         std::vector<Stroke> r = buildReplay({{'U', kLp, true}}, HeldMods{false, false, true, false, false, false, false, false});
         CHECK(r.size() == 6 && r[0].vk == 0xA2 && r[0].up && r[1].vk == 0xA0 && !r[1].up && r[2].vk == 'U');
