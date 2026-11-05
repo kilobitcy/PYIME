@@ -234,6 +234,18 @@ void TextService::onKeyPassedThrough(const char* detail) {
 	tsfLog("字母键未交给输入法:%s", detail);
 }
 
+bool TextService::isChineseMode() const {
+	return client_ && client_->chineseMode();
+}
+
+bool TextService::firstKeyStashEnabled() const {
+	return client_ && client_->firstKeyStash();
+}
+
+void TextService::onDiagnostic(const char* line) {
+	tsfLog("%s", line);
+}
+
 void TextService::createCandidateWindow(Ime::EditSession* session) {
 	if (!candidateWindow_) {
 		candidateWindow_ = new Ime::CandidateWindow(this, session); // assigning to smart ptr also inrease ref count

@@ -148,6 +148,8 @@ bool Client::handleRpcResponse(Json::Value& msg, Ime::EditSession* session) {
 			english_ = msg["english"].asBool();
 			hasEnglish_ = true;
 		}
+		if (msg["firstKeyStash"].isBool())
+			firstKeyStash_ = msg["firstKeyStash"].asBool();
 		updateStatus(msg, session);
 	}
 	return success;

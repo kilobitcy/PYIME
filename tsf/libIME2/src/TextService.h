@@ -29,6 +29,7 @@
 #include "DisplayAttributeProvider.h"
 #include "SinkAdvice.h"
 #include "ComObject.h"
+#include "FirstKeyStash.h"
 
 #include <vector>
 #include <list>
@@ -201,6 +202,10 @@ public:
 
     // PYIME:诊断。字母键按下因上下文禁用/空上下文/键盘关闭而未交给输入法时回调(连续放行只报第一次);默认不做事。
     virtual void onKeyPassedThrough(const char* detail) {}
+    // PYIME:首键暂存与漏键诊断所需的前端状态,由 PIME::TextService 覆写
+    virtual bool isChineseMode() const { return false; }
+    virtual bool firstKeyStashEnabled() const { return false; }
+    virtual void onDiagnostic(const char* line) {}
 
     // COM related stuff
 public:
@@ -279,6 +284,22 @@ private:
     bool passThroughReported_ = false; // PYIME:见 reportPassThrough
 
     void reportPassThrough(ITfContext* context, WPARAM wParam);
+
+    // PYIME:首键暂存补发(TextServiceStash.cpp)
+    bool stashKeyDown(ITfContext* context, WPARAM wParam, LPARAM lParam, BOOL* pfEaten);
+    bool stashKeyUp(WPARAM wParam, BOOL* pfEaten);
+    void watchStashContext(ITfContext* context);
+    void flushStash();
+    void discardStash(const char* why);
+    void syncStash();
+    bool stashCompartmentChanged(REFGUID rguid);
+    static void CALLBACK onStashTimer(HWND hwnd, UINT msg, UINT_PTR id, DWORD time);
+    PIME::FirstKeyStash stash_;
+    UINT_PTR stashTimer_ = 0;
+    ComPtr<ITfContext> stashContext_;
+    SinkAdvice stashDisabledSink_;
+    SinkAdvice stashEmptySink_;
+    bool stashPassLogged_ = false;
 
     // event sink cookies
     SinkAdvice threadMgrEventSink_;

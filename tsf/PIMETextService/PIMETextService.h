@@ -77,6 +77,10 @@ public:
 
 	// PYIME:诊断,写 tsf.log(不记是哪个键)
 	virtual void onKeyPassedThrough(const char* detail);
+	// PYIME:首键暂存与漏键诊断
+	bool isChineseMode() const override;
+	bool firstKeyStashEnabled() const override;
+	void onDiagnostic(const char* line) override;
 
 	// methods called by PIME::Client
 	int candPerRow() const {

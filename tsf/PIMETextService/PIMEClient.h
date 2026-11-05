@@ -49,6 +49,9 @@ public:
 	// handlers for the text service
 	void onActivate();
 	void onDeactivate();
+	// PYIME:首键暂存所需状态
+	bool chineseMode() const { return hasEnglish_ && !english_; }
+	bool firstKeyStash() const { return firstKeyStash_; }
 
 	bool filterKeyDown(Ime::KeyEvent& keyEvent);
 	bool onKeyDown(Ime::KeyEvent& keyEvent, Ime::EditSession* session);
@@ -133,6 +136,7 @@ private:
 	bool isActivated_;
     bool shouldWaitConnection_;
     bool hasEnglish_ = false;  // PYIME:服务端告知过中/英状态(回复里的 english)
+    bool firstKeyStash_ = true; // PYIME:服务端 init 回复的首键暂存开关;旧服务端不带,视为开
     bool english_ = false;     // PYIME:最近一次的中/英状态,worker 重启重连时经 init 带回
 };
 

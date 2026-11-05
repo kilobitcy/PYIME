@@ -607,6 +607,7 @@ STDMETHODIMP TextService::Activate(ITfThreadMgr *pThreadMgr, TfClientId tfClient
 }
 
 STDMETHODIMP TextService::Deactivate() {
+    discardStash("失活");  // PYIME
     // terminate composition properly
     if(isComposing()) {
         if(auto context = currentContext()) {
@@ -650,6 +651,10 @@ STDMETHODIMP TextService::OnUninitDocumentMgr(ITfDocumentMgr *pDocMgr) {
 }
 
 STDMETHODIMP TextService::OnSetFocus(ITfDocumentMgr *pDocMgrFocus, ITfDocumentMgr *pDocMgrPrevFocus) {
+    // PYIME:焦点切到新文档,暂存的首键立即补发
+    if (pDocMgrFocus && stash_.trigger(PIME::StashReason::Focus))
+        flushStash();
+    syncStash();
     return S_OK;
 }
 
@@ -710,6 +715,7 @@ STDMETHODIMP TextService::OnSetFocus(BOOL fForeground) {
         onSetFocus();
     }
     else {
+        discardStash("失去焦点");  // PYIME:Alt+Tab 走这里而非失活
         onKillFocus();
     }
     return S_OK;
@@ -740,6 +746,8 @@ void TextService::reportPassThrough(ITfContext* context, WPARAM wParam) {
 }
 
 STDMETHODIMP TextService::OnTestKeyDown(ITfContext *pContext, WPARAM wParam, LPARAM lParam, BOOL *pfEaten) {
+    if (stashKeyDown(pContext, wParam, lParam, pfEaten))  // PYIME:首键暂存
+        return S_OK;
     if (isKeyboardDisabled(pContext) || !isKeyboardOpened()) {
         *pfEaten = FALSE;
         reportPassThrough(pContext, wParam);
@@ -753,6 +761,8 @@ STDMETHODIMP TextService::OnTestKeyDown(ITfContext *pContext, WPARAM wParam, LPA
 }
 
 STDMETHODIMP TextService::OnKeyDown(ITfContext *pContext, WPARAM wParam, LPARAM lParam, BOOL *pfEaten) {
+    if (stashKeyDown(pContext, wParam, lParam, pfEaten))  // PYIME:首键暂存
+        return S_OK;
     // Some applications do not trigger OnTestKeyDown()
     // So we need to test it again here! Windows TSF sucks!
     if (isKeyboardDisabled(pContext) || !isKeyboardOpened()) {
@@ -785,6 +795,8 @@ STDMETHODIMP TextService::OnKeyDown(ITfContext *pContext, WPARAM wParam, LPARAM 
 }
 
 STDMETHODIMP TextService::OnTestKeyUp(ITfContext *pContext, WPARAM wParam, LPARAM lParam, BOOL *pfEaten) {
+    if (stashKeyUp(wParam, pfEaten))  // PYIME:补发时注入的 Shift
+        return S_OK;
     if (isKeyboardDisabled(pContext) || !isKeyboardOpened()) {
         *pfEaten = FALSE;
     }
@@ -796,6 +808,8 @@ STDMETHODIMP TextService::OnTestKeyUp(ITfContext *pContext, WPARAM wParam, LPARA
 }
 
 STDMETHODIMP TextService::OnKeyUp(ITfContext *pContext, WPARAM wParam, LPARAM lParam, BOOL *pfEaten) {
+    if (stashKeyUp(wParam, pfEaten))  // PYIME:补发时注入的 Shift
+        return S_OK;
     // Some applications do not trigger OnTestKeyDown()
     // So we need to test it again here! Windows TSF sucks!
     if (isKeyboardDisabled(pContext) || !isKeyboardOpened()) {
@@ -850,6 +864,8 @@ STDMETHODIMP TextService::OnChange(REFGUID rguid) {
     // For more detailed introduction, see TSF aware blog:
     // http://blogs.msdn.com/b/tsfaware/archive/2007/05/30/what-is-a-keyboard.aspx
 
+    if (stashCompartmentChanged(rguid))  // PYIME:暂存期间监听的按键上下文隔间
+        return S_OK;
     onCompartmentChanged(rguid);
     return S_OK;
 }
