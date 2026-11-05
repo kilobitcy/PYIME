@@ -13,8 +13,8 @@ Windows 11 拼音输入法。目标:界面与功能像微信输入法一样简�
 - TSF 前端构建:`scripts/build-tsf.sh` 用 mingw 交叉编译 `tsf/` 到 `target/tsf/{x64,x86}/PYIME.dll`;`tsf/tsf_compat.h` 补 mingw 缺的 TSF 接口(取自 windows-rs)。实机验证清单与开发脚本在 `test-kit/`(`tsf.txt`、`tsf-dev.bat`)。
 
 ## Project Layout
-- `crates/pyime-engine`:引擎(`dict` fst 词典、`rime` 词库导入、`pinyin` 音节表与切分格、`fuzzy` 10 对模糊音、`engine` 候选生成与整句 Viterbi、`user` 用户学习、`english` 英文词表与回车学习、`symbol` 符号表(精确整段词后附加符号));`pyime-dict-build` 编译词典、`pyime-en-build` 编译英文词表 `pyime.en`(自带 IT 词表 `installer/en_it.txt`)。
-- `crates/pyime-backend`:服务进程 `pyime-server.exe`(`--supervise` 监护并重启 worker,`supervise.rs`;`--worker` 管道服务端 `pipe.rs` + `session`/`ime`/`tray`/`log`;`--quit` 让监护进程连同 worker 退出);词典 `pyime.dict`、英文词表 `pyime.en`、符号表 `symbols.txt`(自带 `installer/symbols.txt`)放在 `pyime-server.exe` 同目录,用户数据 `%LOCALAPPDATA%\PYIME\user.txt`,用户英文词表 `en.txt`、回车学习计数 `en_learned.txt`、模糊音开关 `fuzzy.txt`(每行一个关闭的规则名,如 `r=l`;不存在即全开)同目录、默认中文程序列表 `chinese-apps.txt`(每行一个 exe 名,不分大小写;不在表的程序默认英文;文件不存在时写入 Weixin.exe/WeChat.exe/wps.exe/et.exe/wpp.exe,想全英文请留空文件)。
+- `crates/pyime-engine`:引擎(`dict` fst 词典、`rime` 词库导入、`pinyin` 音节表与切分格、`fuzzy` 10 对模糊音、`engine` 候选生成与整句 Viterbi、`user` 用户学习、`english` 英文词表与回车学习、`symbol` 符号表(精确整段词后附加符号)、`typo` 按键纠错(输入能完整切成音节且无精确整段词时,查改一处的整段词,第 2 位));`pyime-dict-build` 编译词典、`pyime-en-build` 编译英文词表 `pyime.en`(自带 IT 词表 `installer/en_it.txt`)。
+- `crates/pyime-backend`:服务进程 `pyime-server.exe`(`--supervise` 监护并重启 worker,`supervise.rs`;`--worker` 管道服务端 `pipe.rs` + `session`/`ime`/`tray`/`log`;`--quit` 让监护进程连同 worker 退出);词典 `pyime.dict`、英文词表 `pyime.en`、符号表 `symbols.txt`(自带 `installer/symbols.txt`)放在 `pyime-server.exe` 同目录,用户数据 `%LOCALAPPDATA%\PYIME\user.txt`,用户英文词表 `en.txt`、回车学习计数 `en_learned.txt`、模糊音开关 `fuzzy.txt`(每行一个关闭的规则名,如 `r=l`;含一行 `纠错` 表示关闭按键纠错;含一行 首键暂存 表示关闭首键暂存补发,改后重启输入法生效;不存在即全开)同目录、默认中文程序列表 `chinese-apps.txt`(每行一个 exe 名,不分大小写;不在表的程序默认英文;文件不存在时写入 Weixin.exe/WeChat.exe/wps.exe/et.exe/wpp.exe,想全英文请留空文件)。
 - `scripts/package.sh <版本>`:测试 + 交叉编译 + 编词典 + makensis 一条龙(rime-ice 默认在 /tmp/rime-ice)。
 - `scripts/windows/`:托盘菜单不可用(输入法卡死)时的备用办法,用户手工改 `user.txt` 后使其生效(`edit-user.bat` 停输入法→记事本编辑→重启;`reload-user.bat` 直接重启;逻辑在 `user-reload.ps1`,含备份、UTF-8 校验、去 BOM/CRLF)。ps1 须存为 UTF-8 BOM + CRLF,bat 保持纯 ASCII。
 - 调参观察:`PYIME_DICT=… cargo test -p pyime-engine --release --test real_engine -- --ignored --nocapture`(`PYIME_INPUTS` 指定拼音)。
@@ -71,7 +71,7 @@ Windows 11 拼音输入法。目标:界面与功能像微信输入法一样简�
 - 中英文切换:**单击 Shift**(默认开);Ctrl 切换默认关;系统自带 Ctrl+空格。
 - 翻页:`-`/`=`(上/下翻,默认开)、`[`/`]`(默认开);`,`/`.` 与 Tab/Shift+Tab 默认关。
 - 候选选择:数字键;`;`/`'` 选第 2/3 位默认关;左右 Ctrl 选第 2/3 位默认关。
-- 标点:Ctrl+`.` 切换中英文标点(默认开);中文模式下 `/?` 键输出 `、`(默认开);符号自动补全成对括号(默认开);数字间符号自动转半角(如 `12:00`,默认开)。
+- 标点:Ctrl+`.` 切换中英文标点(默认开);中文模式下 `/?` 键输出 `、`(默认开);符号自动补全成对括号(默认开)(模拟方向键回退光标时,按着的 Shift 在同一次 SendInput 里临时抬起再按回);数字间符号自动转半角(如 `12:00`,默认开)。
 - 默认关:全半角切换(Shift+空格)、简繁切换(Ctrl+Shift+F)、AI 助手(`=`)、V 模式。
 - 模糊拼音:单独设置页,每对可单独开关(见上方 10 对)。
 - 用户确认:截图之外的其他微信设置(语音、跨设备、手机版、工具栏、常用语/剪贴板、表情推荐等)本项目不需要。
@@ -85,8 +85,8 @@ Windows 11 拼音输入法。目标:界面与功能像微信输入法一样简�
 - rime-ice `opencc/emoji.txt` 不合用(上→⬆️、二→2️⃣ 是彩色 emoji)。
 
 ### 托盘图标与菜单(设计 `docs/superpowers/specs/2026-10-22-tray-menu-design.md`)
-- Win8+ 托盘 `windows-mode-icon`:`onActivate` 加、`onDeactivate` 删;左键切中英(组字中忽略:onCommand 回复无编辑会话);Shift 切换同步 `changeButton`。
-- 右键菜单:版本(置灰)/模糊音 ▸(10 对逐项勾选,即时生效、写 `fuzzy.txt`;0.1.16 加,待实机验证)/本程序默认中文(<exe>)(勾选即写 chinese-apps.txt 并切当前会话;组字中只改列表;取不到 exe 置灰;0.1.17 加,待实机验证)/编辑用户词库…/重新加载用户词库/打开数据目录;命令 id 见 `tray.rs`。
+- Win8+ 托盘 `windows-mode-icon`:`onActivate` 加、`onDeactivate` 删;左键切中英(组字中忽略:onCommand 回复无编辑会话);Shift 切换同步 `changeButton`。单击 Shift 在带编辑会话的 `onKeyUp` 切换(`filterKeyUp` 只回 true),回复带 `showMessage` 在光标旁闪"中/英"约 1 秒;托盘、菜单切换不提示。
+- 右键菜单:版本(置灰)/模糊音 ▸(10 对逐项勾选,即时生效、写 `fuzzy.txt`;0.1.16 加,待实机验证)/按键纠错(勾选即开,写 `fuzzy.txt`;待实机验证)/本程序默认中文(<exe>)(勾选即写 chinese-apps.txt 并切当前会话;组字中只改列表;取不到 exe 置灰;0.1.17 加,待实机验证)/编辑用户词库…/重新加载用户词库/打开数据目录;命令 id 见 `tray.rs`。
 - 图标为 PIME 原版黑字,深色任务栏可读性待实机确认。
 - `onCommand`/`onMenu` 回复无 EditSession,不得带 `showMessage`/`commitString`/`compositionString`/候选(`tsf/` 下 `PIMEClient.cpp` 的 `updateMessageWindow` 在判空前执行,会崩宿主)。
 - 菜单起的子进程(记事本/资源管理器)三路 stdio 置空(`ime.rs` `launch`);服务端经命名管道通信,不再有 stdin/stdout 管道句柄被继承的问题。
@@ -103,4 +103,8 @@ Windows 11 拼音输入法。目标:界面与功能像微信输入法一样简�
 - `scripts/windows/user-reload.ps1` 已改为停启 pyime-server.exe,reload-user.bat 已按 `test-kit/tsf.txt` 第 14 项实机验证;edit-user.bat 未单独实机验证。
 - 智能提升评估(2026-10-28,`docs/superpowers/specs/2026-10-28-slim-gram-design.md`):精简语法模型默认随包已放弃;调跨上屏上文加分、"最近一次选择"加分均无效。日志回放须剔除被撤回的选择,并按"当时首位是否即所选"拆易/难两类(难类可靠、易类有曝光偏差)。旧日志(0.1.9–0.1.12,基本未装 gram)难类未解决 185 条中 157 条是首次输入的词。待办:用户装完整 `pyime.gram` 用当前版本积累新日志后重做归因;届时若误选(退格删除未记为撤回)污染学习占比高,考虑退格删除刚上屏词时撤销学习。
 - 符号候选终审未修 Minor:"英文候选不挂符号"无单测;英文候选会被带符号的宿主挤后 1–2 位;`symbols.txt` 非 UTF-8 时整表跳过。
-- 默认英文 + 按程序默认中文、断管道重连重发(2026-10-30,设计 `docs/superpowers/specs/2026-10-30-default-mode-and-first-key-design.md`):待按 `test-kit/tsf.txt` 第十五至十八项实机验证;首键丢失的 TSF 上下文路径待用户贴回 `tsf.log`("字母键未交给输入法""退避期内…")后对症修。会话中/英状态经回复 `english` 由 DLL 记住、重连 `init` 带回。
+- 默认英文 + 按程序默认中文、断管道重连重发(2026-10-30,设计 `docs/superpowers/specs/2026-10-30-default-mode-and-first-key-design.md`):待按 `test-kit/tsf.txt` 第十五至十八项实机验证;首键丢失的 TSF 上下文路径待用户贴回 `tsf.log`("字母键未交给输入法""退避期内…")后对症修。会话中/英状态经回复 `english` 由 DLL 记住、重连 `init` 带回。已合并到本地 main(e880250,未推送);0.1.17 测试包 `installer/PYIME-0.1.17-setup.exe` 已打(2026-10-31,词典用当日浅克隆的最新 rime-ice);版本号改动(Cargo.toml/Cargo.lock)未提交,实机验证通过后再问用户提交、打 tag、发布。遗留 Minor 见 `.superpowers/sdd/progress.md`。
+- 按键纠错(2026-11-03,分支 typo-correction,设计 `docs/superpowers/specs/2026-11-03-typo-correction-design.md`):`TYPO_PENALTY`=5.0,回归零变化;待按 `test-kit/tsf.txt` 第九节实机验证。
+- 成对括号光标与中/英提示(2026-11-04,分支 caret-and-mode-hint,设计 `docs/superpowers/specs/2026-11-04-caret-and-mode-hint-design.md`):待按 `test-kit/tsf.txt` 第十节实机验证。
+- 0.1.18 已发布(2026-11-04,tag v0.1.18,含 0.1.16/0.1.17 测试版内容、按键纠错、括号光标、中/英提示);第九、十节及第十五至十八项仍待实机验证。
+- 首键暂存补发 + 漏键诊断(2026-11-05,分支 first-key-stash,设计 `docs/superpowers/specs/2026-11-05-first-key-stash-design.md`):Chromium 禁用+空上下文的首个字母暂存后原序补发,超时 500 ms;Mullion 路径(键未交给输入法)只记诊断,补偿待 Mullion 侧日志对时后定。待按 `test-kit/tsf.txt` 第十一节实机验证。
