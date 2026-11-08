@@ -51,6 +51,27 @@ int main() {
         w.hookDown(300, true, 100);
         CHECK(!w.hookUp(300, 150));
     }
+    {   // 输入法没收到:WM_CHAR 时返回 vk,同一按下只返回一次;抬起不再报
+        MissedKeyWatch w;
+        w.hookDown('H', true, 100);
+        CHECK(w.hookChar('h', 101) == 'H');
+        CHECK(w.hookChar('h', 102) == 0);
+        CHECK(!w.hookUp('H', 150));
+    }
+    {   // 输入法收到了、不符合条件、超过 500 ms、非小写字母、没看到按下:返回 0
+        MissedKeyWatch w;
+        w.hookDown('H', true, 100);
+        w.sinkSaw('H', 100);
+        CHECK(w.hookChar('h', 101) == 0);
+        MissedKeyWatch w2;
+        w2.hookDown('H', false, 100);
+        CHECK(w2.hookChar('h', 101) == 0);
+        MissedKeyWatch w3;
+        w3.hookDown('H', true, 100);
+        CHECK(w3.hookChar('h', 601) == 0);
+        CHECK(w3.hookChar('H', 101) == 0 && w3.hookChar('1', 101) == 0);
+        CHECK(w3.hookChar('u', 101) == 0);
+    }
     if (failures == 0) std::printf("missed_key_watch_test: 全部通过\n");
     return failures == 0 ? 0 : 1;
 }

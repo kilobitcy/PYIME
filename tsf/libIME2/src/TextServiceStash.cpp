@@ -39,6 +39,7 @@ const char* reasonText(PIME::StashReason r) {
     case PIME::StashReason::Focus: return "焦点切换";
     case PIME::StashReason::Compartment: return "隔间变化";
     case PIME::StashReason::NextKey: return "下一个键";
+    case PIME::StashReason::Missed: return "未经输入法";
     case PIME::StashReason::Timeout: return "超时";
     }
     return "?";

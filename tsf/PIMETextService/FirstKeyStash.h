@@ -31,7 +31,8 @@ struct KeyIn {
     bool stashable;  // 调用方判定满足暂存条件(开关开、中文、未组字、无修饰键、非重复、禁用+空上下文的字母)
 };
 
-enum class StashReason { Focus, Compartment, NextKey, Timeout };
+// Missed:钩子拦下了未经输入法的字母键字符
+enum class StashReason { Focus, Compartment, NextKey, Timeout, Missed };
 
 struct StashDecision {
     bool eat = false;    // 吃掉这个键
@@ -124,6 +125,17 @@ public:
         if (state_ != State::Stashing) return false;
         reason_ = r;
         return true;
+    }
+
+    // 钩子拦下了未经输入法的字母键字符,把该键排入补发。eat=接受(调用方拦下字符),flush=调用方应立即 takeFlush 补发;
+    // 停用或在途时不接受(在途中可能正是补发的键再次未经输入法,不再拦,免得循环)
+    StashDecision addMissed(const StashKey& k, uint64_t nowMs) {
+        if (off_ || state_ == State::InFlight) return {};
+        if (queue_.empty()) startMs_ = nowMs;
+        queue_.push_back(k);
+        state_ = State::Stashing;
+        reason_ = StashReason::Missed;
+        return {true, true};
     }
 
     // 定时轮询:暂存超时返回 true;在途超时放弃在途(takeAbandoned 为真),有下一轮键时返回 true。

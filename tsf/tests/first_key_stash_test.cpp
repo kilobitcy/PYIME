@@ -158,6 +158,29 @@ int main() {
         s.discard();
         CHECK(!s.takeAbandoned() && s.off());
     }
+    {   // 未经输入法:空闲时接受并要求立即补发,原因为 Missed;补发后在途
+        FirstKeyStash s;
+        StashDecision d = s.addMissed({'H', kLp, false}, 10);
+        CHECK(d.eat && d.flush && s.stashing() && s.reason() == StashReason::Missed);
+        CHECK(s.takeFlush(10).size() == 1 && s.inFlight());
+        CHECK(!s.addMissed({'H', kLp, false}, 20).eat);  // 在途时不接受
+        CHECK(!s.keyDown(injected('H'), 30).eat && s.idle());
+    }
+    {   // 暂存中:排在已暂存字母之后一起补发
+        FirstKeyStash s;
+        s.keyDown(stashable('D'), 10);
+        CHECK(s.addMissed({'U', kLp, false}, 20).flush);
+        std::vector<StashKey> k = s.takeFlush(20);
+        CHECK(k.size() == 2 && k[0].vk == 'D' && k[1].vk == 'U');
+    }
+    {   // 停用后不接受
+        FirstKeyStash s;
+        s.keyDown(stashable('D'), 10);
+        s.trigger(StashReason::Focus);
+        s.takeFlush(10);
+        s.poll(1010);
+        CHECK(s.off() && !s.addMissed({'H', kLp, false}, 1020).eat);
+    }
     {   // 补发序列:按着左 Ctrl、暂存键带 Shift 且用户已松开 Shift → Ctrl 抬、Shift 按、键、Shift 抬、Ctrl 按
         std::vector<Stroke> r = buildReplay({{'U', kLp, true}}, HeldMods{false, false, true, false, false, false, false, false});
         CHECK(r.size() == 6 && r[0].vk == 0xA2 && r[0].up && r[1].vk == 0xA0 && !r[1].up && r[2].vk == 'U');
