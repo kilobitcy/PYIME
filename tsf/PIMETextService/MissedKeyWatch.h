@@ -43,6 +43,13 @@ public:
         return vk;
     }
 
+    // 该字母已拦下补发、物理键仍按着:此时再来它的 WM_CHAR,多半是补发的键再次未经输入法
+    bool replayedHeld(uint32_t ch) const {
+        if (ch < 'a' || ch > 'z') return false;
+        const Pending& p = pending_[ch - 'a' + 'A'];
+        return p.active && p.replayed;
+    }
+
     // 钩子取出 WM_KEYUP;返回 true 表示该记一条
     bool hookUp(uint32_t vk, uint64_t nowMs) {
         if (vk >= 256) return false;

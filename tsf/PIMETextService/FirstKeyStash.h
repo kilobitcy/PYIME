@@ -187,8 +187,16 @@ public:
     }
 
     bool off() const { return off_; }
-    // 补发的键再次未经输入法等异常:本对象停用暂存(同放弃在途)
-    void disable() { off_ = true; }
+    // 补发的键再次未经输入法等异常:本对象停用暂存。在途时立即收尾(不再等注入键回来):
+    // 返回 true 表示有下一轮键,调用方应立即 takeFlush 补发(停用后补发不再进在途)
+    bool disable() {
+        off_ = true;
+        if (state_ != State::InFlight) return false;
+        inFlightLeft_ = 0;
+        state_ = queue_.empty() ? State::Idle : State::Stashing;
+        reason_ = StashReason::NextKey;
+        return !queue_.empty();
+    }
 
     bool idle() const { return state_ == State::Idle; }
     bool stashing() const { return state_ == State::Stashing; }

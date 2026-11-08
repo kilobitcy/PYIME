@@ -58,6 +58,15 @@ int main() {
         CHECK(w.hookChar('h', 102) == 0);
         CHECK(!w.hookUp('H', 150));
     }
+    {   // 已补发且物理键仍按着:replayedHeld 为真;抬起后为假
+        MissedKeyWatch w;
+        w.hookDown('H', true, 100);
+        CHECK(!w.replayedHeld('h'));
+        w.hookChar('h', 101);
+        CHECK(w.replayedHeld('h') && !w.replayedHeld('u') && !w.replayedHeld('1'));
+        w.hookUp('H', 150);
+        CHECK(!w.replayedHeld('h'));
+    }
     {   // 输入法收到了、不符合条件、超过 500 ms、非小写字母、没看到按下:返回 0
         MissedKeyWatch w;
         w.hookDown('H', true, 100);

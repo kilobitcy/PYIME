@@ -90,13 +90,19 @@ bool TextService::keyWatchChar(WPARAM ch, LPARAM lParam) {
         return false;
     const uint64_t now = ::GetTickCount64();
     const uint32_t vk = keyWatch_.hookChar((uint32_t)ch, now);
-    if (!vk)
-        return false;
     if (stash_.inFlight()) {
-        stash_.disable();
-        onDiagnostic("字母键未经输入法:补发期间仍未经输入法,本会话停用暂存");
+        // 补发的键(物理键仍按着时即其 pending 已补发)或另一个键在补发期间未经输入法:停用并立即收尾在途,
+        // 已排下一轮的键马上补发,不等 1 s 兜底;这个字符放行
+        if (vk || keyWatch_.replayedHeld((uint32_t)ch)) {
+            onDiagnostic("字母键未经输入法:补发期间仍未经输入法,本会话停用暂存");
+            if (stash_.disable())
+                flushStash();
+            syncStash();
+        }
         return false;
     }
+    if (!vk)
+        return false;
     // 扫描码与扩展键标志取自 WM_CHAR 的 lParam(与按下时相同),重复计数置 1
     const PIME::StashKey k{vk, ((uint32_t)lParam & 0x01FF0000u) | 1u, false};
     if (!stash_.addMissed(k, now).eat)

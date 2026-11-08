@@ -178,6 +178,16 @@ int main() {
         s.disable();
         CHECK(s.off() && !s.keyDown(stashable('D'), 10).eat && !s.addMissed({'H', kLp, false}, 10).eat);
     }
+    {   // 在途中 disable:立即收尾,下一轮键马上可取出且不再进在途;迟到的注入键不吃
+        FirstKeyStash s;
+        s.addMissed({'H', kLp, false}, 10);
+        s.takeFlush(10);
+        CHECK(s.keyDown(normal('U'), 20).eat);
+        CHECK(s.disable() && s.off() && s.stashing());
+        std::vector<StashKey> k = s.takeFlush(20);
+        CHECK(k.size() == 1 && k[0].vk == 'U' && s.idle());
+        CHECK(!s.keyDown(injected('H'), 30).eat);
+    }
     {   // 停用后不接受
         FirstKeyStash s;
         s.keyDown(stashable('D'), 10);
