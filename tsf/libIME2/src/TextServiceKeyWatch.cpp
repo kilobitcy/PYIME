@@ -1,6 +1,7 @@
 // PYIME:漏键诊断。本线程 WH_GETMESSAGE 钩子(不是全局钩子)看到字母键,而输入法按键入口始终没收到时,
 // 在 tsf.log 记一条(不记是哪个键)。判定逻辑在 PIMETextService/MissedKeyWatch.h,设计见
 // docs/superpowers/specs/2026-11-05-first-key-stash-design.md 需求 2。
+// 取出 WM_CHAR 时若对应字母键按下未经输入法,拦下字符、经首键暂存补发(设计 2026-11-08-missed-key-replay-design.md)。
 #include "TextService.h"
 #include <imm.h>
 #include <cstdio>
@@ -31,11 +32,13 @@ void TextService::uninstallKeyWatch() {
 
 LRESULT CALLBACK TextService::keyWatchProc(int code, WPARAM wParam, LPARAM lParam) {
     if (code == HC_ACTION && (wParam & PM_REMOVE) && t_watchOwner) {
-        const MSG* msg = reinterpret_cast<const MSG*>(lParam);
+        MSG* msg = reinterpret_cast<MSG*>(lParam);
         if (msg->message == WM_KEYDOWN)
             t_watchOwner->keyWatchDown(msg->wParam);
         else if (msg->message == WM_KEYUP)
             t_watchOwner->keyWatchUp(msg->wParam);
+        else if (msg->message == WM_CHAR && t_watchOwner->keyWatchChar(msg->wParam, msg->lParam))
+            msg->message = WM_NULL;  // 拦下:字母不进文本,改由补发走输入法
     }
     return ::CallNextHookEx(nullptr, code, wParam, lParam);
 }
@@ -66,6 +69,26 @@ void TextService::keyWatchUp(WPARAM vk) {
     std::snprintf(line, sizeof(line), "字母键未经输入法:焦点文档=%s 窗口输入法上下文=%s 距上次上屏 %s",
         hasDoc ? "有" : "无", hasImc ? "有" : "无", since);
     onDiagnostic(line);
+}
+
+// 取出 WM_CHAR:对应字母键按下未经输入法时,把该键排入首键暂存补发。返回 true 表示调用方应拦下该消息。
+// 在途时不拦(可能正是补发的键再次未经输入法,免得循环);焦点不在本线程不拦(补发会进别处)
+bool TextService::keyWatchChar(WPARAM ch, LPARAM lParam) {
+    if (!firstKeyStashEnabled() || !isChineseMode() || isComposing() || stash_.off() || stash_.inFlight()
+        || !stashFocusOnThisThread())
+        return false;
+    const uint64_t now = ::GetTickCount64();
+    const uint32_t vk = keyWatch_.hookChar((uint32_t)ch, now);
+    if (!vk)
+        return false;
+    // 扫描码与扩展键标志取自 WM_CHAR 的 lParam(与按下时相同),重复计数置 1
+    const PIME::StashKey k{vk, ((uint32_t)lParam & 0x01FF0000u) | 1u, false};
+    if (!stash_.addMissed(k, now).eat)
+        return false;
+    onDiagnostic("字母键未经输入法:已拦下字符,补发");
+    flushStash();
+    syncStash();
+    return true;
 }
 
 }  // namespace Ime

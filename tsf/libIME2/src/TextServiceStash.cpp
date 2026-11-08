@@ -166,17 +166,28 @@ bool TextService::stashCompartmentChanged(REFGUID rguid) {
     return true;  // 只有暂存才监听这两个隔间,不转给服务端
 }
 
+// 键盘焦点窗口属于本线程(补发的键会送到它)。记事本这类一个进程多线程的程序,前台顶层窗口可能属于别的线程,不能只看前台窗口
+bool TextService::stashFocusOnThisThread() const {
+    HWND fg = ::GetForegroundWindow();
+    if (!fg)
+        return false;
+    GUITHREADINFO gti{};
+    gti.cbSize = sizeof(gti);
+    if (!::GetGUIThreadInfo(::GetWindowThreadProcessId(fg, nullptr), &gti) || !gti.hwndFocus)
+        return false;
+    return ::GetWindowThreadProcessId(gti.hwndFocus, nullptr) == ::GetCurrentThreadId();
+}
+
 void TextService::flushStash() {
     const uint64_t now = ::GetTickCount64();
     const PIME::StashReason reason = stash_.reason();
     const std::vector<PIME::StashKey> keys = stash_.takeFlush(now);
     if (keys.empty())
         return;
-    // 前台已换到别的线程(Alt+Tab 等):丢弃,不把字母注入到别的程序
-    HWND fg = ::GetForegroundWindow();
-    if (!fg || ::GetWindowThreadProcessId(fg, nullptr) != ::GetCurrentThreadId()) {
+    // 键盘焦点已换到别的线程(Alt+Tab 等):丢弃,不把字母注入到别的程序
+    if (!stashFocusOnThisThread()) {
         stash_.discard();
-        onDiagnostic("首键暂存:前台已不是本线程,丢弃");
+        onDiagnostic("首键暂存:焦点已不在本线程,丢弃");
         return;
     }
     char line[128];

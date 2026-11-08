@@ -291,6 +291,7 @@ private:
     DWORD stashCompartmentValue(const GUID& key, ITfContext* context) const;
     bool stashKeyUp(WPARAM wParam, BOOL* pfEaten);
     void watchStashContext(ITfContext* context);
+    bool stashFocusOnThisThread() const;
     void flushStash();
     void discardStash(const char* why);
     void syncStash();
@@ -314,6 +315,7 @@ private:
     void uninstallKeyWatch();
     void keyWatchDown(WPARAM vk);
     void keyWatchUp(WPARAM vk);
+    bool keyWatchChar(WPARAM ch, LPARAM lParam);
     static LRESULT CALLBACK keyWatchProc(int code, WPARAM wParam, LPARAM lParam);
     PIME::MissedKeyWatch keyWatch_;
     HHOOK keyWatchHook_ = nullptr;
