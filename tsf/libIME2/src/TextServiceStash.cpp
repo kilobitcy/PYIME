@@ -178,17 +178,18 @@ bool TextService::stashFocusOnThisThread() const {
     return ::GetWindowThreadProcessId(gti.hwndFocus, nullptr) == ::GetCurrentThreadId();
 }
 
-void TextService::flushStash() {
+// 返回是否真的注入了按键(无键、焦点不在本线程、SendInput 失败均为 false)
+bool TextService::flushStash() {
     const uint64_t now = ::GetTickCount64();
     const PIME::StashReason reason = stash_.reason();
     const std::vector<PIME::StashKey> keys = stash_.takeFlush(now);
     if (keys.empty())
-        return;
+        return false;
     // 键盘焦点已换到别的线程(Alt+Tab 等):丢弃,不把字母注入到别的程序
     if (!stashFocusOnThisThread()) {
         stash_.discard();
         onDiagnostic("首键暂存:焦点已不在本线程,丢弃");
-        return;
+        return false;
     }
     char line[128];
     std::snprintf(line, sizeof(line), "首键暂存:%s 等待 %llu ms 共 %u 键", reasonText(reason),
@@ -211,7 +212,9 @@ void TextService::flushStash() {
     if (::SendInput((UINT)inputs.size(), inputs.data(), sizeof(INPUT)) != inputs.size()) {
         stash_.discard();
         onDiagnostic("首键暂存:SendInput 失败,丢弃");
+        return false;
     }
+    return true;
 }
 
 void TextService::discardStash(const char* why) {

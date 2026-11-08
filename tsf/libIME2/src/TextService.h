@@ -292,7 +292,7 @@ private:
     bool stashKeyUp(WPARAM wParam, BOOL* pfEaten);
     void watchStashContext(ITfContext* context);
     bool stashFocusOnThisThread() const;
-    void flushStash();
+    bool flushStash();
     void discardStash(const char* why);
     void syncStash();
     bool stashCompartmentChanged(REFGUID rguid);
@@ -316,6 +316,7 @@ private:
     void keyWatchDown(WPARAM vk);
     void keyWatchUp(WPARAM vk);
     bool keyWatchChar(WPARAM ch, LPARAM lParam);
+    void focusInputState(bool& hasDoc, bool& hasImc) const;
     static LRESULT CALLBACK keyWatchProc(int code, WPARAM wParam, LPARAM lParam);
     PIME::MissedKeyWatch keyWatch_;
     HHOOK keyWatchHook_ = nullptr;

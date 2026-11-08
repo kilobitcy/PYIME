@@ -187,6 +187,9 @@ public:
     }
 
     bool off() const { return off_; }
+    // 补发的键再次未经输入法等异常:本对象停用暂存(同放弃在途)
+    void disable() { off_ = true; }
+
     bool idle() const { return state_ == State::Idle; }
     bool stashing() const { return state_ == State::Stashing; }
     bool inFlight() const { return state_ == State::InFlight; }

@@ -173,6 +173,11 @@ int main() {
         std::vector<StashKey> k = s.takeFlush(20);
         CHECK(k.size() == 2 && k[0].vk == 'D' && k[1].vk == 'U');
     }
+    {   // disable:立即停用,不再暂存、不接受未经输入法的键
+        FirstKeyStash s;
+        s.disable();
+        CHECK(s.off() && !s.keyDown(stashable('D'), 10).eat && !s.addMissed({'H', kLp, false}, 10).eat);
+    }
     {   // 停用后不接受
         FirstKeyStash s;
         s.keyDown(stashable('D'), 10);

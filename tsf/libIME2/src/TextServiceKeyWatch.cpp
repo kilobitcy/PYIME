@@ -53,15 +53,8 @@ void TextService::keyWatchUp(WPARAM vk) {
     const uint64_t now = ::GetTickCount64();
     if (!keyWatch_.hookUp((uint32_t)vk, now))
         return;
-    ComPtr<ITfDocumentMgr> docMgr;
-    const bool hasDoc = threadMgr_ && threadMgr_->GetFocus(&docMgr) == S_OK && docMgr;
-    bool hasImc = false;
-    if (HWND focus = ::GetFocus()) {
-        if (HIMC imc = ::ImmGetContext(focus)) {
-            hasImc = true;
-            ::ImmReleaseContext(focus, imc);
-        }
-    }
+    bool hasDoc = false, hasImc = false;
+    focusInputState(hasDoc, hasImc);
     char since[32] = "无";
     if (lastCommitMs_)
         std::snprintf(since, sizeof(since), "%llu ms", (unsigned long long)(now - lastCommitMs_));
@@ -71,24 +64,48 @@ void TextService::keyWatchUp(WPARAM vk) {
     onDiagnostic(line);
 }
 
+// 焦点文档(TSF)与焦点窗口的输入法上下文(IMM)是否存在
+void TextService::focusInputState(bool& hasDoc, bool& hasImc) const {
+    ComPtr<ITfDocumentMgr> docMgr;
+    hasDoc = threadMgr_ && threadMgr_->GetFocus(&docMgr) == S_OK && docMgr;
+    hasImc = false;
+    if (HWND focus = ::GetFocus()) {
+        if (HIMC imc = ::ImmGetContext(focus)) {
+            hasImc = true;
+            ::ImmReleaseContext(focus, imc);
+        }
+    }
+}
+
 // 取出 WM_CHAR:对应字母键按下未经输入法时,把该键排入首键暂存补发。返回 true 表示调用方应拦下该消息。
-// 在途时不拦(可能正是补发的键再次未经输入法,免得循环);焦点不在本线程不拦(补发会进别处)
+// 只在焦点文档与输入法上下文都在时拦(实机证据的形态;密码框等本就不进输入法的窗口不拦);
+// 焦点不在本线程不拦(补发会进别处);在途时又有键未经输入法(多半是补发的键)即停用暂存,免得循环、打乱顺序;
+// 补发没真正注入(焦点校验失败、SendInput 失败)时放行字符,不丢字
 bool TextService::keyWatchChar(WPARAM ch, LPARAM lParam) {
-    if (!firstKeyStashEnabled() || !isChineseMode() || isComposing() || stash_.off() || stash_.inFlight()
-        || !stashFocusOnThisThread())
+    if (!firstKeyStashEnabled() || !isChineseMode() || isComposing() || stash_.off())
+        return false;
+    bool hasDoc = false, hasImc = false;
+    focusInputState(hasDoc, hasImc);
+    if (!hasDoc || !hasImc || !stashFocusOnThisThread())
         return false;
     const uint64_t now = ::GetTickCount64();
     const uint32_t vk = keyWatch_.hookChar((uint32_t)ch, now);
     if (!vk)
         return false;
+    if (stash_.inFlight()) {
+        stash_.disable();
+        onDiagnostic("字母键未经输入法:补发期间仍未经输入法,本会话停用暂存");
+        return false;
+    }
     // 扫描码与扩展键标志取自 WM_CHAR 的 lParam(与按下时相同),重复计数置 1
     const PIME::StashKey k{vk, ((uint32_t)lParam & 0x01FF0000u) | 1u, false};
     if (!stash_.addMissed(k, now).eat)
         return false;
-    onDiagnostic("字母键未经输入法:已拦下字符,补发");
-    flushStash();
+    const bool sent = flushStash();
     syncStash();
-    return true;
+    if (sent)
+        onDiagnostic("字母键未经输入法:已拦下字符,补发");
+    return sent;
 }
 
 }  // namespace Ime
