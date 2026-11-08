@@ -108,3 +108,4 @@ Windows 11 拼音输入法。目标:界面与功能像微信输入法一样简�
 - 成对括号光标与中/英提示(2026-11-04,分支 caret-and-mode-hint,设计 `docs/superpowers/specs/2026-11-04-caret-and-mode-hint-design.md`):待按 `test-kit/tsf.txt` 第十节实机验证。
 - 0.1.18 已发布(2026-11-04,tag v0.1.18,含 0.1.16/0.1.17 测试版内容、按键纠错、括号光标、中/英提示);第九、十节及第十五至十八项仍待实机验证。
 - 首键暂存补发 + 漏键诊断(2026-11-05,分支 first-key-stash,设计 `docs/superpowers/specs/2026-11-05-first-key-stash-design.md`):Chromium 禁用+空上下文的首个字母暂存后原序补发,超时 500 ms;Mullion 路径(键未交给输入法)只记诊断,补偿待 Mullion 侧日志对时后定。待按 `test-kit/tsf.txt` 第十一节实机验证。
+- 未经输入法字母键拦截补发(2026-11-08,设计 `docs/superpowers/specs/2026-11-08-missed-key-replay-design.md`):0.1.19 实机日志证实记事本里首键按下进了本线程消息队列、焦点文档与 HIMC 都在,TSF 却没交给本模块(Mullion"无 HIMC"推测不成立);钩子取出该键 WM_CHAR 时拦下、经首键暂存补发。已合并 main,0.1.20 测试包已打(2026-11-08,版本号改动未提交),待按 `test-kit/tsf.txt` 第十二节实机验证。
