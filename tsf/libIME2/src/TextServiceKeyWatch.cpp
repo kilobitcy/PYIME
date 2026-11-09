@@ -79,8 +79,8 @@ void TextService::focusInputState(bool& hasDoc, bool& hasImc) const {
 
 // 取出 WM_CHAR:对应字母键按下未经输入法时,把该键排入首键暂存补发。返回 true 表示调用方应拦下该消息。
 // 只在焦点文档与输入法上下文都在时拦(实机证据的形态;密码框等本就不进输入法的窗口不拦);
-// 焦点不在本线程不拦(补发会进别处);在途时又有键未经输入法(多半是补发的键)即停用暂存,免得循环、打乱顺序;
-// 补发没真正注入(焦点校验失败、SendInput 失败)时放行字符,不丢字
+// 焦点不在本线程不拦(补发会进别处);在途时又有键未经输入法(多半是补发的键)即停用暂存,免得循环、打乱顺序。
+// 延后补发期间焦点移走(失去焦点、补发时校验失败)或 SendInput 失败,按首键暂存原有语义丢弃并记日志
 bool TextService::keyWatchChar(WPARAM ch, LPARAM lParam) {
     if (!firstKeyStashEnabled() || !isChineseMode() || isComposing() || stash_.off())
         return false;
@@ -105,13 +105,12 @@ bool TextService::keyWatchChar(WPARAM ch, LPARAM lParam) {
         return false;
     // 扫描码与扩展键标志取自 WM_CHAR 的 lParam(与按下时相同),重复计数置 1
     const PIME::StashKey k{vk, ((uint32_t)lParam & 0x01FF0000u) | 1u, false};
+    // 不立即补发(刚取得焦点时紧随的注入键同样未经输入法):200 ms 后或下一个键到输入法时补发
     if (!stash_.addMissed(k, now).eat)
         return false;
-    const bool sent = flushStash();
     syncStash();
-    if (sent)
-        onDiagnostic("字母键未经输入法:已拦下字符,补发");
-    return sent;
+    onDiagnostic("字母键未经输入法:已拦下字符,延后补发");
+    return true;
 }
 
 }  // namespace Ime

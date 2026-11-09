@@ -95,6 +95,9 @@ inline std::vector<Stroke> buildReplay(const std::vector<StashKey>& keys, const 
 class FirstKeyStash {
 public:
     static constexpr uint64_t kTimeoutMs = 500;
+    // 未经输入法的键延后补发:实机证据(0.1.20,Mullion)显示窗口重新获得焦点后的首键与紧随其后 8 ms 的补发键都未经输入法,
+    // 180 ms 后的下一个键才正常;下一个键先到输入法(说明已就绪)则随之立即补发
+    static constexpr uint64_t kMissedDelayMs = 200;
     static constexpr uint64_t kInFlightMaxMs = 1000;
     static constexpr uint64_t kDupWindowMs = 50;  // 第二入口与第一入口的最大间隔
 
@@ -127,22 +130,25 @@ public:
         return true;
     }
 
-    // 钩子拦下了未经输入法的字母键字符,把该键排入补发。eat=接受(调用方拦下字符),flush=调用方应立即 takeFlush 补发;
-    // 停用或在途时不接受(在途中可能正是补发的键再次未经输入法,不再拦,免得循环)
+    // 钩子拦下了未经输入法的字母键字符,把该键排入补发。eat=接受(调用方拦下字符);不立即补发:
+    // 空闲时起 200 ms 计时(超时补发,结局为 Missed),其间下一个键到输入法即随之补发(结局"下一个键");
+    // 已在暂存(Chromium 首键)则追加、沿用原计时。停用或在途时不接受(在途中可能正是补发的键再次未经输入法,不再拦,免得循环)
     StashDecision addMissed(const StashKey& k, uint64_t nowMs) {
         if (off_ || state_ == State::InFlight) return {};
-        if (queue_.empty()) startMs_ = nowMs;
+        if (queue_.empty()) {
+            startMs_ = nowMs;
+            timeoutMs_ = kMissedDelayMs;
+        }
         queue_.push_back(k);
         state_ = State::Stashing;
-        reason_ = StashReason::Missed;
-        return {true, true};
+        return {true, false};
     }
 
     // 定时轮询:暂存超时返回 true;在途超时放弃在途(takeAbandoned 为真),有下一轮键时返回 true。
     // 放弃在途后本对象停用暂存(off):补发标记可能失效,再暂存会吃键—重发无限循环
     bool poll(uint64_t nowMs) {
-        if (state_ == State::Stashing && nowMs - startMs_ >= kTimeoutMs) {
-            reason_ = StashReason::Timeout;
+        if (state_ == State::Stashing && nowMs - startMs_ >= timeoutMs_) {
+            reason_ = timeoutMs_ == kMissedDelayMs ? StashReason::Missed : StashReason::Timeout;
             return true;
         }
         if (state_ == State::InFlight && nowMs - inFlightSinceMs_ >= kInFlightMaxMs) {
@@ -217,6 +223,7 @@ private:
         switch (state_) {
         case State::Idle:
             if (!k.injected && k.stashable) {
+                timeoutMs_ = kTimeoutMs;
                 push(k, nowMs);
                 state_ = State::Stashing;
                 return {true, false};
@@ -271,6 +278,7 @@ private:
     State state_ = State::Idle;
     std::vector<StashKey> queue_;  // 暂存中为本轮,在途中为下一轮
     uint64_t startMs_ = 0;
+    uint64_t timeoutMs_ = kTimeoutMs;  // 本轮暂存的超时:首键暂存 500 ms,未经输入法 200 ms
     uint64_t waitedMs_ = 0;
     uint64_t inFlightSinceMs_ = 0;
     size_t inFlightLeft_ = 0;

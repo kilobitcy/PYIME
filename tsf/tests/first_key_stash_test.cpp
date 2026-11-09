@@ -158,19 +158,46 @@ int main() {
         s.discard();
         CHECK(!s.takeAbandoned() && s.off());
     }
-    {   // 未经输入法:空闲时接受并要求立即补发,原因为 Missed;补发后在途
+    {   // 未经输入法:空闲时接受、不立即补发;200 ms 超时补发,原因为 Missed;补发后在途
         FirstKeyStash s;
         StashDecision d = s.addMissed({'H', kLp, false}, 10);
-        CHECK(d.eat && d.flush && s.stashing() && s.reason() == StashReason::Missed);
-        CHECK(s.takeFlush(10).size() == 1 && s.inFlight());
-        CHECK(!s.addMissed({'H', kLp, false}, 20).eat);  // 在途时不接受
-        CHECK(!s.keyDown(injected('H'), 30).eat && s.idle());
+        CHECK(d.eat && !d.flush && s.stashing());
+        CHECK(!s.poll(209));
+        CHECK(s.poll(210) && s.reason() == StashReason::Missed);
+        CHECK(s.takeFlush(210).size() == 1 && s.inFlight());
+        CHECK(!s.addMissed({'H', kLp, false}, 220).eat);  // 在途时不接受
+        CHECK(!s.keyDown(injected('H'), 230).eat && s.idle());
     }
-    {   // 暂存中:排在已暂存字母之后一起补发
+    {   // 未经输入法后下一个键到了输入法:吃掉、排在其后立即补发
+        FirstKeyStash s;
+        s.addMissed({'G', kLp, false}, 10);
+        StashDecision d = s.keyDown(normal('U'), 60);
+        CHECK(d.eat && d.flush && s.reason() == StashReason::NextKey);
+        std::vector<StashKey> k = s.takeFlush(60);
+        CHECK(k.size() == 2 && k[0].vk == 'G' && k[1].vk == 'U');
+    }
+    {   // 未经输入法连续两键:都排队,按第一键起算 200 ms
+        FirstKeyStash s;
+        s.addMissed({'G', kLp, false}, 10);
+        CHECK(s.addMissed({'U', kLp, false}, 100).eat);
+        CHECK(!s.poll(209) && s.poll(210));
+        CHECK(s.takeFlush(210).size() == 2);
+    }
+    {   // 首键暂存之后:超时仍为 500 ms、原因为 Timeout(不受上一轮未经输入法影响)
+        FirstKeyStash s;
+        s.addMissed({'G', kLp, false}, 10);
+        s.poll(210);
+        s.takeFlush(210);
+        s.keyDown(injected('G'), 220);
+        s.keyDown(stashable('D'), 300);
+        CHECK(!s.poll(799) && s.poll(800) && s.reason() == StashReason::Timeout);
+    }
+    {   // 暂存中:排在已暂存字母之后,沿用首键暂存 500 ms 计时
         FirstKeyStash s;
         s.keyDown(stashable('D'), 10);
-        CHECK(s.addMissed({'U', kLp, false}, 20).flush);
-        std::vector<StashKey> k = s.takeFlush(20);
+        StashDecision d = s.addMissed({'U', kLp, false}, 20);
+        CHECK(d.eat && !d.flush && !s.poll(509) && s.poll(510));
+        std::vector<StashKey> k = s.takeFlush(510);
         CHECK(k.size() == 2 && k[0].vk == 'D' && k[1].vk == 'U');
     }
     {   // disable:立即停用,不再暂存、不接受未经输入法的键
