@@ -7,11 +7,15 @@ use serde_json::Value;
 use std::collections::HashMap;
 use std::rc::Rc;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::mpsc::{Receiver, Sender};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::sync::mpsc::{Receiver, RecvTimeoutError, Sender};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 /// 单条请求处理超过这么久即视为卡死,看门狗结束 worker 进程,由监护进程重启。
 pub const WATCHDOG_LIMIT_MS: u64 = 5000;
+/// 有未写盘的学习时,连续这么久没有新消息即写盘。
+pub const IDLE_FLUSH: Duration = Duration::from_secs(1);
+/// 有未写盘的学习时,距首次置脏这么久必写盘(连续打字时每个键都经 hub,只等空闲可能很久不写)。
+pub const MAX_DELAY: Duration = Duration::from_secs(10);
 
 pub enum Msg {
     /// 新连接建立,`exe` 为对端宿主程序名(取不到为空);先于该连接的任何请求到达。
@@ -82,8 +86,35 @@ impl Hub {
 
 /// 工作线程主循环,直到所有发送端关闭。处理每条请求期间在 `busy` 上记开始时刻供看门狗检查。
 pub fn run(rx: Receiver<Msg>, ime: Rc<Ime>, busy: &Busy) {
-    let mut hub = Hub::new(ime);
-    for msg in rx {
+    run_with(rx, ime, busy, IDLE_FLUSH, MAX_DELAY);
+}
+
+/// 同 `run`,写盘时机可调(测试用短值):有未写盘的学习时,空闲 `idle` 或距首次置脏 `max_delay` 即写盘。
+/// 写盘不在 `busy` 计时内,磁盘慢不触发看门狗。
+pub fn run_with(rx: Receiver<Msg>, ime: Rc<Ime>, busy: &Busy, idle: Duration, max_delay: Duration) {
+    let mut hub = Hub::new(ime.clone());
+    loop {
+        let msg = match ime.dirty_since() {
+            None => match rx.recv() {
+                Ok(m) => m,
+                Err(_) => break,
+            },
+            Some(since) => {
+                let left = max_delay.saturating_sub(since.elapsed());
+                if left.is_zero() {
+                    ime.flush();
+                    continue;
+                }
+                match rx.recv_timeout(idle.min(left)) {
+                    Ok(m) => m,
+                    Err(RecvTimeoutError::Timeout) => {
+                        ime.flush();
+                        continue;
+                    }
+                    Err(RecvTimeoutError::Disconnected) => break,
+                }
+            }
+        };
         match msg {
             Msg::Opened { conn, exe } => hub.open(conn, exe),
             Msg::Request { conn, body, reply } => {
@@ -128,6 +159,7 @@ mod tests {
     use pyime_engine::fuzzy::FuzzyConfig;
     use serde_json::json;
     use std::sync::{mpsc, Arc};
+    use std::time::Duration;
 
     const N: i64 = 78;
     const I: i64 = 73;
@@ -228,5 +260,70 @@ mod tests {
         assert!(busy.stuck(now + 6000, WATCHDOG_LIMIT_MS));
         busy.end();
         assert!(!busy.stuck(now + 6000, WATCHDOG_LIMIT_MS));
+    }
+
+    fn wait_exists(p: &std::path::Path) -> bool {
+        (0..200).any(|_| {
+            std::thread::sleep(Duration::from_millis(10));
+            p.exists()
+        })
+    }
+
+    #[test]
+    fn 有改动时空闲即写盘() {
+        let p = crate::ime::temp_user_path("hub-idle");
+        let (tx, rx) = mpsc::channel::<Msg>();
+        let q = p.clone();
+        let worker = std::thread::spawn(move || {
+            let ime = Ime::with_user_path(engine(), q);
+            ime.learn("ni", "你", 0, "", &[]);
+            run_with(rx, ime, &Busy::default(), Duration::from_millis(50), Duration::from_secs(60));
+        });
+        assert!(wait_exists(&p), "空闲 50ms 后应写盘");
+        drop(tx);
+        worker.join().unwrap();
+    }
+
+    #[test]
+    fn 持续有消息时到期也写盘() {
+        let p = crate::ime::temp_user_path("hub-max");
+        let (tx, rx) = mpsc::channel::<Msg>();
+        let q = p.clone();
+        let worker = std::thread::spawn(move || {
+            let ime = Ime::with_user_path(engine(), q);
+            ime.learn("ni", "你", 0, "", &[]);
+            run_with(rx, ime, &Busy::default(), Duration::from_secs(60), Duration::from_millis(100));
+        });
+        let (rtx, _rrx) = mpsc::channel();
+        let mut written = false;
+        for seq in 0..200 {
+            tx.send(Msg::Request { conn: 1, body: req(seq, N), reply: rtx.clone() }).unwrap();
+            std::thread::sleep(Duration::from_millis(10));
+            if p.exists() {
+                written = true;
+                break;
+            }
+        }
+        assert!(written, "距首次改动 100ms 应写盘(空闲 60s 不会触发)");
+        drop(tx);
+        worker.join().unwrap();
+    }
+
+    #[test]
+    fn 无改动时不写盘() {
+        let p = crate::ime::temp_user_path("hub-clean");
+        let (tx, rx) = mpsc::channel::<Msg>();
+        let q = p.clone();
+        let worker = std::thread::spawn(move || {
+            run_with(rx, Ime::with_user_path(engine(), q), &Busy::default(), Duration::from_millis(10), Duration::from_millis(10))
+        });
+        let (rtx, _rrx) = mpsc::channel();
+        for seq in 0..5 {
+            tx.send(Msg::Request { conn: 1, body: req(seq, N), reply: rtx.clone() }).unwrap();
+        }
+        std::thread::sleep(Duration::from_millis(100));
+        drop(tx);
+        worker.join().unwrap();
+        assert!(!p.exists());
     }
 }
