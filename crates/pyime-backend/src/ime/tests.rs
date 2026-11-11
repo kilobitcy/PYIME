@@ -14,6 +14,7 @@ fn 文件不存在时照常写_自己写盘后再学习照常写回() {
     let ime = Ime::with_user_path(engine(), p.clone());
     ime.learn("ni", "你", 0, "", &[]);
     ime.learn("ni", "泥", 0, "", &[]);
+    ime.flush();
     let t = std::fs::read_to_string(&p).unwrap();
     assert!(t.contains("ni\t你\t1") && t.contains("ni\t泥\t1"), "{t}");
 }
@@ -23,9 +24,11 @@ fn 文件被外部修改后不覆盖() {
     let p = temp_user_path("external");
     let ime = Ime::with_user_path(engine(), p.clone());
     ime.learn("ni", "你", 0, "", &[]);
+    ime.flush();
     std::fs::write(&p, "ni\t泥\t9\nhao\t好\t3").unwrap();
     assert!(ime.user_file_changed());
     ime.learn("ni", "你", 0, "", &[]);
+    ime.flush();
     assert_eq!(std::fs::read_to_string(&p).unwrap(), "ni\t泥\t9\nhao\t好\t3");
 }
 
@@ -35,6 +38,7 @@ fn 启动时读不出的文件不被覆盖() {
     std::fs::write(&p, b"ni\t\xc4\xe3\t5").unwrap(); // GBK 编码的"你"
     let ime = Ime::with_user_path(engine(), p.clone());
     ime.learn("ni", "你", 0, "", &[]);
+    ime.flush();
     assert_eq!(std::fs::read(&p).unwrap(), b"ni\t\xc4\xe3\t5");
 }
 
@@ -56,6 +60,7 @@ fn 重新加载读入外部修改并恢复写回() {
     assert!(!ime.user_file_changed());
     assert_eq!(ime.generation(), 1);
     ime.learn("ni", "你", 0, "", &[]);
+    ime.flush();
     let t = std::fs::read_to_string(&p).unwrap();
     assert!(t.contains("ni\t泥\t9") && t.contains("hao\t好\t3") && t.contains("ni\t你\t1") && !t.contains('\r'), "{t}");
 }
@@ -70,6 +75,7 @@ fn 重新加载遇非utf8不读入且继续保护() {
     assert_eq!(ime.generation(), 0);
     assert!(ime.user_export().contains("ni\t你\t1"));
     ime.learn("ni", "你", 0, "", &[]);
+    ime.flush();
     assert_eq!(std::fs::read(&p).unwrap(), b"ni\t\xc4\xe3\t5");
 }
 
@@ -197,4 +203,80 @@ fn 左右shift都按着时都抬起_按回顺序相反() {
     let vks: Vec<(u16, bool)> = ev.iter().map(|e| (e.vk, e.up)).collect();
     assert_eq!(vks, vec![(0xA0, true), (0xA1, true), (39, false), (39, true), (0xA1, false), (0xA0, false)]);
     assert_eq!(ev[1].scan, 0x36);
+}
+
+#[test]
+fn 学习只置脏_flush_才写盘() {
+    let p = temp_user_path("dirty");
+    let ime = Ime::with_user_path(engine(), p.clone());
+    assert!(ime.dirty_since().is_none());
+    ime.learn("ni", "你", 0, "", &[]);
+    assert!(ime.dirty_since().is_some() && !p.exists());
+    ime.flush();
+    assert!(ime.dirty_since().is_none());
+    let t = std::fs::read_to_string(&p).unwrap();
+    assert!(t.contains(&format!("ni\t你\t1\t{}", now_day())), "{t}");
+}
+
+#[test]
+fn 重新加载丢弃未写盘学习() {
+    let p = temp_user_path("reload-dirty");
+    std::fs::write(&p, "hao\t好\t3").unwrap();
+    let ime = Ime::with_user_path(engine(), p.clone());
+    ime.learn("ni", "你", 0, "", &[]);
+    assert_eq!(ime.reload_user(), Ok(()));
+    assert!(ime.dirty_since().is_none());
+    assert!(!ime.user_export().contains("ni\t你"));
+    assert_eq!(std::fs::read_to_string(&p).unwrap(), "hao\t好\t3");
+}
+
+#[test]
+fn 启动时淘汰过期一次性条目_写盘前备份原文件() {
+    let p = temp_user_path("aged");
+    let old = now_day() - 61;
+    let orig = format!("ni\t泥\t1\t{old}\nhao\t好\t3\t{old}\n@ng\t我\t泥\t1\t{old}");
+    std::fs::write(&p, &orig).unwrap();
+    let ime = Ime::with_user_path(engine(), p.clone());
+    assert!(ime.dirty_since().is_some());
+    let t = ime.user_export();
+    assert!(!t.contains('泥') && t.contains("hao\t好\t3"), "{t}");
+    ime.flush();
+    assert_eq!(std::fs::read_to_string(p.with_extension("txt.aged.bak")).unwrap(), orig);
+    assert!(!std::fs::read_to_string(&p).unwrap().contains('泥'));
+}
+
+#[test]
+fn 升级后首次写盘条目数不变() {
+    let p = temp_user_path("upgrade");
+    std::fs::write(&p, "ni\t泥\t1\nhao\t好\t3\n@ng\t我\t泥\t1\n").unwrap();
+    let ime = Ime::with_user_path(engine(), p.clone());
+    ime.learn("ni", "你", 0, "", &[]);
+    ime.flush();
+    let t = std::fs::read_to_string(&p).unwrap();
+    assert_eq!(t.lines().count(), 4, "{t}");
+    assert!(t.contains("ni\t泥\t1\t") && t.contains("@ng\t我\t泥\t1\t") && t.contains("ni\t你\t1\t"), "{t}");
+    assert!(!p.with_extension("txt.aged.bak").exists());
+}
+
+#[test]
+fn 同一天只淘汰一次_force_照做() {
+    let p = temp_user_path("age-once");
+    let ime = Ime::with_user_path(engine(), p.clone());
+    let today = now_day();
+    let old = format!("ni\t泥\t1\t{}", today - 61);
+    ime.engine.borrow_mut().set_user(UserModel::import(&old, today));
+    assert_eq!(ime.age(today, false), (0, 0)); // 启动时已淘汰过今天
+    assert_eq!(ime.age(today, true), (1, 0));
+    ime.engine.borrow_mut().set_user(UserModel::import(&old, today + 1));
+    assert_eq!(ime.age(today + 1, false), (1, 0));
+}
+
+#[test]
+fn 编辑用户词库强制写盘并清掉置脏() {
+    let p = temp_user_path("edit-flush");
+    let ime = Ime::with_user_path(engine(), p.clone());
+    ime.learn("ni", "你", 0, "", &[]);
+    ime.edit_user();
+    assert!(ime.dirty_since().is_none());
+    assert!(std::fs::read_to_string(&p).unwrap().contains("ni\t你\t1\t"));
 }

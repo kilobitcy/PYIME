@@ -11,7 +11,7 @@ use pyime_engine::user::UserModel;
 use std::cell::{Cell, RefCell};
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 pub struct Ime {
     engine: RefCell<Engine>,
@@ -24,6 +24,12 @@ pub struct Ime {
     skip_logged: Cell<bool>,
     /// 用户数据代际号,每次重新加载成功 +1;会话据此丢弃重载前的撤销记录。
     generation: Cell<u32>,
+    /// 有未写盘的学习时为首次置脏时刻;hub 据此在空闲或到期时写盘。
+    dirty: Cell<Option<Instant>>,
+    /// 上次老化淘汰的日期,一天至多淘汰一次。
+    pruned_day: Cell<u32>,
+    /// 淘汰删了条目:下次写盘前先把原文件备份为 `user.txt.aged.bak`。
+    aged_backup: Cell<bool>,
     /// 默认中文的程序列表(`chinese-apps.txt`);`apps_path` 为 None 时只在内存。
     apps: RefCell<ChineseApps>,
     apps_path: Option<PathBuf>,
@@ -302,6 +308,9 @@ impl Ime {
             user_stamp: Cell::new(user_stamp),
             skip_logged: Cell::new(false),
             generation: Cell::new(0),
+            dirty: Cell::new(None),
+            pruned_day: Cell::new(0),
+            aged_backup: Cell::new(false),
             apps: RefCell::new(apps),
             apps_path,
             apps_writable: Cell::new(apps_writable),
@@ -345,7 +354,9 @@ impl Ime {
         read_fuzzy(&mut engine, user_path.as_deref());
         let user_stamp = user_path.as_deref().and_then(|p| Self::read_user(&mut engine, p));
         log::line(&format!("引擎就绪,耗时 {:?}", t.elapsed()));
-        Self::build(engine, user_path, en_learned_path, user_stamp)
+        let ime = Self::build(engine, user_path, en_learned_path, user_stamp);
+        ime.age(now_day(), true);
+        ime
     }
 
     /// 测试用:不读盘、不存盘。
@@ -359,7 +370,9 @@ impl Ime {
     pub fn with_user_path(mut engine: Engine, path: PathBuf) -> Rc<Ime> {
         read_fuzzy(&mut engine, Some(&path));
         let stamp = Self::read_user(&mut engine, &path);
-        Self::build(engine, Some(path), None, stamp)
+        let ime = Self::build(engine, Some(path), None, stamp);
+        ime.age(now_day(), true);
+        ime
     }
 
     /// `user.txt` 自上次读入或写盘后是否被外部修改过(文件不存在不算)。
@@ -375,6 +388,7 @@ impl Ime {
 
     /// 菜单"重新加载用户词库":重读 `user.txt`(去 BOM、CRLF→LF)与英文词表。
     /// 读不出(如非 UTF-8)时不动内存数据、不更新 stamp,文件继续受保护。
+    /// 未写盘的学习(至多约 10 s)随之丢弃。
     pub fn reload_user(&self) -> Result<(), String> {
         let Some(path) = &self.user_path else { return Err("没有用户数据路径".into()) };
         let text = match std::fs::read(path) {
@@ -383,12 +397,17 @@ impl Ime {
             Err(e) => return Err(format!("读取 {path:?} 失败: {e}")),
         };
         let text = normalize_user(&text);
-        let mut engine = self.engine.borrow_mut();
-        engine.set_user(UserModel::import(&text, now_day()));
-        engine.set_english(load_english(self.en_learned_path.as_ref()));
+        {
+            let mut engine = self.engine.borrow_mut();
+            engine.set_user(UserModel::import(&text, now_day()));
+            engine.set_english(load_english(self.en_learned_path.as_ref()));
+        }
         self.user_stamp.set(stamp(path));
         self.skip_logged.set(false);
         self.generation.set(self.generation.get() + 1);
+        // 以文件为准:未写盘的学习丢弃,再同启动一样淘汰一次
+        self.dirty.set(None);
+        self.age(now_day(), true);
         Ok(())
     }
 
@@ -396,7 +415,7 @@ impl Ime {
     /// 再用记事本打开。不等待记事本退出:Win11 新记事本可能并入已有窗口,启动的进程随即退出。
     pub fn edit_user(&self) {
         let Some(path) = &self.user_path else { return };
-        self.save(&self.engine.borrow());
+        self.write_now();
         if let Err(e) = std::fs::copy(path, path.with_extension("txt.bak")) {
             log::line(&format!("备份 {path:?} 失败: {e}"));
         }
@@ -520,30 +539,31 @@ impl Ime {
         self.engine.borrow().candidates_after(input, context)
     }
 
-    /// 学习一次选择(连同整句拆出的模糊词)并只存盘一次;存盘失败只记日志。
+    /// 学习一次选择(连同整句拆出的模糊词),只置脏;由 hub 在空闲或到期时写盘。
     /// `pairs` 是该候选用到的模糊规则,`prev` 是其上文,`lessons` 见 `Candidate::lessons`。
     pub fn learn(&self, typed: &str, text: &str, pairs: u16, prev: &str, lessons: &[Lesson]) {
         let mut engine = self.engine.borrow_mut();
+        engine.user_mut().set_today(now_day());
         engine.learn(typed, text);
         engine.learn_fuzzy(pairs);
         engine.learn_next(prev, text);
         engine.learn_lessons(lessons);
-        self.save(&engine);
+        self.mark_dirty();
     }
 
-    /// 撤销一次 `learn`(含 lessons)并存盘。
+    /// 撤销一次 `learn`(含 lessons),只置脏。
     pub fn unlearn(&self, typed: &str, text: &str, pairs: u16, prev: &str, lessons: &[Lesson]) {
         let mut engine = self.engine.borrow_mut();
         engine.unlearn(typed, text, pairs, prev);
         engine.unlearn_lessons(lessons);
-        self.save(&engine);
+        self.mark_dirty();
     }
 
-    /// 删除词 `text` 的全部个人学习并存盘。
+    /// 删除词 `text` 的全部个人学习:用户数据置脏,英文学习照旧立即存盘。
     pub fn forget(&self, text: &str) {
         let mut engine = self.engine.borrow_mut();
         engine.forget(text);
-        self.save(&engine);
+        self.mark_dirty();
         self.save_english(&engine);
     }
 
@@ -567,6 +587,51 @@ impl Ime {
         }
     }
 
+    fn mark_dirty(&self) {
+        if self.dirty.get().is_none() {
+            self.dirty.set(Some(Instant::now()));
+        }
+    }
+
+    /// 首次出现未写盘学习的时刻;没有则为 None。
+    pub fn dirty_since(&self) -> Option<Instant> {
+        self.dirty.get()
+    }
+
+    /// 有未写盘的学习时写盘(先按需老化淘汰)。
+    pub fn flush(&self) {
+        if self.dirty.get().is_some() {
+            self.write_now();
+        }
+    }
+
+    /// 立即按需淘汰并写盘,清掉置脏;文件被外部修改或写盘失败时 `save` 不写(只记日志),置脏同样清掉,免得反复重试。
+    fn write_now(&self) {
+        self.age(now_day(), false);
+        self.save(&self.engine.borrow());
+        self.dirty.set(None);
+    }
+
+    /// 老化淘汰:同一天只做一次(`force` 时照做)。删了条目则记日志、待备份并置脏。返回 (词对, 搭配) 删除条数。
+    fn age(&self, today: u32, force: bool) -> (usize, usize) {
+        if !force && self.pruned_day.get() == today {
+            return (0, 0);
+        }
+        self.pruned_day.set(today);
+        let (p, n) = {
+            let mut engine = self.engine.borrow_mut();
+            let user = engine.user_mut();
+            user.set_today(today);
+            user.prune()
+        };
+        if p + n > 0 {
+            log::line(&format!("老化淘汰:词对 {p} 条、个人搭配 {n} 条"));
+            self.aged_backup.set(true);
+            self.mark_dirty();
+        }
+        (p, n)
+    }
+
     fn save(&self, engine: &Engine) {
         let Some(path) = &self.user_path else { return };
         if self.user_file_changed() {
@@ -577,6 +642,11 @@ impl Ime {
         }
         if let Some(dir) = path.parent() {
             let _ = std::fs::create_dir_all(dir);
+        }
+        if self.aged_backup.replace(false) && path.exists() {
+            if let Err(e) = std::fs::copy(path, path.with_extension("txt.aged.bak")) {
+                log::line(&format!("备份 {path:?} 失败: {e}"));
+            }
         }
         match write_atomic(path, engine.user().export().as_bytes()) {
             Ok(()) => {
