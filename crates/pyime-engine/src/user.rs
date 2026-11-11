@@ -12,8 +12,10 @@ const FUZZY_DISCOUNT_CAP: f64 = 2.0;
 const COLLOCATION_SLOPE: f64 = 1.5;
 const COLLOCATION_CAP: f64 = 5.0;
 const MAX_CONTEXT: usize = 3;
-/// 个人搭配条目上限,满了不再收新条目(已有的仍累加)。
+/// 个人搭配条目上限;满了先淘汰最旧的一次性条目,仍满则不收新条目(已有的仍累加)。
 const MAX_COLLOCATIONS: usize = 100_000;
+/// 个人搭配满额时一次淘汰的最旧一次性条目数。
+const EVICT_BATCH: usize = 1000;
 /// 单项计数上限,防止历史无限放大。
 const MAX_COUNT: u32 = 1000;
 /// 老化:计数为 1 且这么多天没再用的词对与搭配被淘汰。
@@ -111,11 +113,26 @@ impl UserModel {
         for k in 1..=chars.len().min(MAX_CONTEXT) {
             let key = (chars[chars.len() - k..].iter().collect::<String>(), word.to_string());
             if self.next.len() >= MAX_COLLOCATIONS && !self.next.contains_key(&key) {
-                continue;
+                self.evict_next();
+                if self.next.len() >= MAX_COLLOCATIONS {
+                    continue;
+                }
             }
             let e = self.next.entry(key).or_insert(Entry { n: 0, day: today });
             e.n = (e.n + 1).min(MAX_COUNT);
             e.day = today;
+        }
+    }
+
+    /// 个人搭配满额时,淘汰最后使用日最早的至多 `EVICT_BATCH` 条计数为 1 的条目。
+    fn evict_next(&mut self) {
+        let mut ones: Vec<(u32, (String, String))> = self.next.iter().filter(|(_, e)| e.n == 1).map(|(k, e)| (e.day, k.clone())).collect();
+        if ones.len() > EVICT_BATCH {
+            ones.select_nth_unstable_by_key(EVICT_BATCH - 1, |o| o.0);
+            ones.truncate(EVICT_BATCH);
+        }
+        for (_, k) in ones {
+            self.next.remove(&k);
         }
     }
 
@@ -382,5 +399,39 @@ mod tests {
         assert_eq!(m.prune(), (0, 0));
         let mut m = UserModel::import("ni\t你\t1\t0", DAY_FLOOR - 1);
         assert_eq!(m.prune(), (0, 0));
+    }
+
+    #[test]
+    fn 搭配满额时淘汰最旧的一次性条目再收新的() {
+        let mut m = UserModel::default();
+        m.set_today(DAY_FLOOR);
+        m.learn_next("甲", "旧0");
+        m.learn_next("甲", "旧0"); // 计数 2,不淘汰
+        for i in 1..1500 {
+            m.learn_next("甲", &format!("旧{i}"));
+        }
+        m.set_today(DAY_FLOOR + 1);
+        for i in 1500..MAX_COLLOCATIONS {
+            m.learn_next("甲", &format!("新{i}"));
+        }
+        assert_eq!(m.next.len(), MAX_COLLOCATIONS);
+        m.learn_next("甲", "来了");
+        assert_eq!(m.next.len(), MAX_COLLOCATIONS - EVICT_BATCH + 1);
+        assert!(m.collocation("甲", "来了") > 0.0 && m.collocation("甲", "旧0") > 0.0);
+        assert_eq!((1..1500).filter(|i| m.collocation("甲", &format!("旧{i}")) > 0.0).count(), 499);
+        assert!((1500..MAX_COLLOCATIONS).all(|i| m.collocation("甲", &format!("新{i}")) > 0.0));
+    }
+
+    #[test]
+    fn 搭配满额且无一次性条目时仍拒收() {
+        let mut m = UserModel::default();
+        for i in 0..MAX_COLLOCATIONS {
+            let w = format!("词{i}");
+            m.learn_next("甲", &w);
+            m.learn_next("甲", &w);
+        }
+        m.learn_next("甲", "来了");
+        assert_eq!(m.next.len(), MAX_COLLOCATIONS);
+        assert_eq!(m.collocation("甲", "来了"), 0.0);
     }
 }
