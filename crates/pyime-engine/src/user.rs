@@ -16,6 +16,10 @@ const MAX_CONTEXT: usize = 3;
 const MAX_COLLOCATIONS: usize = 100_000;
 /// 单项计数上限,防止历史无限放大。
 const MAX_COUNT: u32 = 1000;
+/// 老化:计数为 1 且这么多天没再用的词对与搭配被淘汰。
+pub const AGE_DAYS: u32 = 60;
+/// "今天"早于此日(2026-11-01)视为时钟不可信,不淘汰。
+pub const DAY_FLOOR: u32 = 20758;
 
 /// 一条学习记录:次数与最后使用日(自 1970-01-01 起的天数)。
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -80,6 +84,24 @@ impl UserModel {
         self.pairs.retain(|(_, w), _| w != word);
         self.words.remove(word);
         self.next.retain(|(_, w), _| w != word);
+    }
+
+    /// 淘汰计数为 1 且 `AGE_DAYS` 天未再用的词对与搭配,返回 (词对, 搭配) 删除条数;删词对时词层扣 1。
+    /// 今天早于 `DAY_FLOOR` 不淘汰;时钟倒退(记录日晚于今天)按距今 0 天算。
+    pub fn prune(&mut self) -> (usize, usize) {
+        let today = self.today;
+        if today < DAY_FLOOR {
+            return (0, 0);
+        }
+        let stale = |e: &Entry| e.n == 1 && today.saturating_sub(e.day) >= AGE_DAYS;
+        let gone: Vec<(String, String)> = self.pairs.iter().filter(|(_, e)| stale(e)).map(|(k, _)| k.clone()).collect();
+        for k in &gone {
+            self.pairs.remove(k);
+            dec(&mut self.words, &k.1);
+        }
+        let before = self.next.len();
+        self.next.retain(|_, e| !stale(e));
+        (gone.len(), before - self.next.len())
     }
 
     /// 记一次搭配:`prev` 是光标前已有的文字,其后上屏了 `word`。上文末尾 1–3 个字各记一条。
@@ -334,5 +356,31 @@ mod tests {
     fn 旧格式缺日期按读入当天() {
         let m = UserModel::import("ni\t你\t3\n@ng\t我\t你\t2\n@ng\t我\t他\t1\t坏\n", 20800);
         assert_eq!(m.export(), "@ng\t我\t他\t1\t20800\n@ng\t我\t你\t2\t20800\nni\t你\t3\t20800");
+    }
+
+    #[test]
+    fn 一次性且满60天才淘汰_词层随之扣减() {
+        let t = DAY_FLOOR + 100;
+        let text = format!(
+            "ni\t你\t1\t{}\nni\t泥\t1\t{}\nhao\t好\t2\t{}\nnihao\t你\t1\t{}\n@ng\t我\t你\t1\t{}\n@ng\t我\t泥\t1\t{}\n@ng\t我\t好\t2\t{}",
+            t - 60, t - 59, t - 200, t - 59, t - 60, t - 59, t - 200
+        );
+        let mut m = UserModel::import(&text, t);
+        assert_eq!(m.prune(), (1, 1));
+        assert!(!m.chose("ni", "你") && m.chose("ni", "泥") && m.chose("hao", "好") && m.chose("nihao", "你"));
+        assert_eq!(m.bonus("zzz", "你"), WORD_BASE); // 词层 2 次扣成 1 次:WORD_BASE + ln1
+        assert_eq!(m.collocation("我", "你"), 0.0);
+        assert!(m.collocation("我", "泥") > 0.0 && m.collocation("我", "好") > 0.0);
+    }
+
+    #[test]
+    fn 读入当天的旧行不淘汰_时钟不可信或倒退不淘汰() {
+        let t = DAY_FLOOR + 100;
+        let mut m = UserModel::import("ni\t你\t1\n@ng\t我\t你\t1\n", t);
+        assert_eq!(m.prune(), (0, 0));
+        let mut m = UserModel::import(&format!("ni\t你\t1\t{}", t + 500), t); // 记录日晚于今天
+        assert_eq!(m.prune(), (0, 0));
+        let mut m = UserModel::import("ni\t你\t1\t0", DAY_FLOOR - 1);
+        assert_eq!(m.prune(), (0, 0));
     }
 }
