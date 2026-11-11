@@ -5,3 +5,4 @@ installer/*-setup.exe
 installer/pyime.dict
 installer/pyime.en
 dist/
+.claude/scheduled_tasks.lock
