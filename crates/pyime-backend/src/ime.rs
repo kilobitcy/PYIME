@@ -85,7 +85,8 @@ fn send_key(vk: u16) {
     // SAFETY: GetAsyncKeyState 只读全局键盘状态。
     let down = |vk: i32| unsafe { GetAsyncKeyState(vk) } < 0;
     // 剩余竞态:查询与 SendInput 之间(微秒级)用户恰好松开 Shift,Shift 会逻辑上停在按下,直到下次按 Shift
-    let inputs: Vec<Input> = arrow_events(vk, down(0xA0), down(0xA1))
+    let (l, r) = (down(0xA0), down(0xA1));
+    let inputs: Vec<Input> = arrow_events(vk, l, r)
         .into_iter()
         .map(|e| {
             let flags = if e.up { KEYEVENTF_KEYUP } else { 0 } | if e.extended { KEYEVENTF_EXTENDEDKEY } else { 0 };
@@ -93,7 +94,33 @@ fn send_key(vk: u16) {
         })
         .collect();
     // SAFETY: inputs 是有效的 INPUT 数组,布局与 Win32 INPUT(64 位下 40 字节)一致。
-    unsafe { SendInput(inputs.len() as u32, inputs.as_ptr(), std::mem::size_of::<Input>() as i32) };
+    let t = std::time::Instant::now();
+    let sent = unsafe { SendInput(inputs.len() as u32, inputs.as_ptr(), std::mem::size_of::<Input>() as i32) };
+    // 诊断:注入时的物理 Shift、实际注入条数与 SendInput 耗时(被宿主低级键盘钩子拖住时明显变长)
+    log::line(&format!("注入方向键 vk={vk} 物理Shift L={} R={} SendInput {sent}/{} 耗时 {:?}", u8::from(l), u8::from(r), inputs.len(), t.elapsed()));
+}
+
+/// 在专用线程里按序注入方向键,不阻塞请求处理。
+/// 宿主(如微信 4.x)在等本次按键回复时线程被占住,若其装有低级键盘钩子,同步 `SendInput` 会被拖到钩子超时(实测约 1.2s);
+/// 期间用户松开 Shift、继续打的键与注入序列交错,注入的 Shift↓ 落在用户的 Shift↑ 之后,Shift 卡在按下(日志 2026-11-11)。
+/// 放到线程里后回复先发出、宿主线程空出,钩子即时处理;同一线程保证多次注入不乱序。
+#[cfg(windows)]
+fn send_key_async(vk: u16) {
+    use std::sync::mpsc::{channel, Sender};
+    use std::sync::{Mutex, OnceLock};
+    static TX: OnceLock<Mutex<Sender<u16>>> = OnceLock::new();
+    let tx = TX.get_or_init(|| {
+        let (tx, rx) = channel::<u16>();
+        std::thread::spawn(move || {
+            for vk in rx {
+                send_key(vk);
+            }
+        });
+        Mutex::new(tx)
+    });
+    if let Ok(tx) = tx.lock() {
+        let _ = tx.send(vk);
+    }
 }
 
 /// 词典随安装包放在 `server.exe` 同目录。
@@ -473,7 +500,7 @@ impl Ime {
         self.pressed.borrow_mut().push(vk);
         #[cfg(windows)]
         #[cfg(not(test))]
-        send_key(vk);
+        send_key_async(vk);
         #[cfg(not(any(windows, test)))]
         let _ = vk;
     }
