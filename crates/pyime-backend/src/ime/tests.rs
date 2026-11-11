@@ -280,3 +280,21 @@ fn 编辑用户词库强制写盘并清掉置脏() {
     assert!(ime.dirty_since().is_none());
     assert!(std::fs::read_to_string(&p).unwrap().contains("ni\t你\t1\t"));
 }
+
+#[test]
+fn 重新加载清掉待备份标志_不覆盖更早的淘汰备份() {
+    let p = temp_user_path("reload-aged");
+    let bak = p.with_extension("txt.aged.bak");
+    std::fs::write(&bak, "旧备份").unwrap();
+    let old = now_day() - 61;
+    std::fs::write(&p, format!("ni\t泥\t1\t{old}\nhao\t好\t3\t{old}")).unwrap();
+    let ime = Ime::with_user_path(engine(), p.clone());
+    assert!(ime.dirty_since().is_some());
+    std::fs::write(&p, "hao\t好\t3").unwrap(); // 外部修改:flush 被保护跳过,备份标志未消耗
+    ime.flush();
+    assert_eq!(ime.reload_user(), Ok(()));
+    ime.learn("ni", "你", 0, "", &[]);
+    ime.flush();
+    assert!(std::fs::read_to_string(&p).unwrap().contains("ni\t你"));
+    assert_eq!(std::fs::read_to_string(&bak).unwrap(), "旧备份");
+}

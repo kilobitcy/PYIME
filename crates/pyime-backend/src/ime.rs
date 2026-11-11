@@ -405,8 +405,9 @@ impl Ime {
         self.user_stamp.set(stamp(path));
         self.skip_logged.set(false);
         self.generation.set(self.generation.get() + 1);
-        // 以文件为准:未写盘的学习丢弃,再同启动一样淘汰一次
+        // 以文件为准:未写盘的学习丢弃,之前的淘汰随内存数据作废(待备份标志一并清掉),再同启动一样淘汰一次
         self.dirty.set(None);
+        self.aged_backup.set(false);
         self.age(now_day(), true);
         Ok(())
     }
