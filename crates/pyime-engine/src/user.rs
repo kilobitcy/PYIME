@@ -17,28 +17,44 @@ const MAX_COLLOCATIONS: usize = 100_000;
 /// 单项计数上限,防止历史无限放大。
 const MAX_COUNT: u32 = 1000;
 
+/// 一条学习记录:次数与最后使用日(自 1970-01-01 起的天数)。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct Entry {
+    n: u32,
+    day: u32,
+}
+
 #[derive(Default)]
 pub struct UserModel {
-    pairs: HashMap<(String, String), u32>,
+    pairs: HashMap<(String, String), Entry>,
     words: HashMap<String, u32>,
     /// 各模糊规则被接受的次数(下标同 `fuzzy::variants` 的规则位:声母 0–4,韵母 5–9)。
     fuzzy: [u32; 10],
-    /// (上文末尾 1–3 个字, 紧随其后的词) → 次数。
-    next: HashMap<(String, String), u32>,
+    /// (上文末尾 1–3 个字, 紧随其后的词) → 次数与最后使用日。
+    next: HashMap<(String, String), Entry>,
+    /// 今天(自 1970-01-01 起的天数),学习时记为最后使用日;由调用方设置。
+    today: u32,
 }
 
 impl UserModel {
+    /// 设置"今天",此后的学习以它为最后使用日。
+    pub fn set_today(&mut self, today: u32) {
+        self.today = today;
+    }
+
     /// 记一次选择:用户键入 `typed`,上屏了 `word`。
     pub fn learn(&mut self, typed: &str, word: &str) {
-        let p = self.pairs.entry((typed.to_string(), word.to_string())).or_insert(0);
-        *p = (*p + 1).min(MAX_COUNT);
+        let today = self.today;
+        let p = self.pairs.entry((typed.to_string(), word.to_string())).or_insert(Entry { n: 0, day: today });
+        p.n = (p.n + 1).min(MAX_COUNT);
+        p.day = today;
         let w = self.words.entry(word.to_string()).or_insert(0);
         *w = (*w + 1).min(MAX_COUNT);
     }
 
     /// 撤销一次 `learn`(各计数减一,归零即删除)。
     pub fn unlearn(&mut self, typed: &str, word: &str) {
-        dec(&mut self.pairs, &(typed.to_string(), word.to_string()));
+        dec_entry(&mut self.pairs, &(typed.to_string(), word.to_string()));
         dec(&mut self.words, &word.to_string());
     }
 
@@ -55,7 +71,7 @@ impl UserModel {
     pub fn unlearn_next(&mut self, prev: &str, word: &str) {
         let chars: Vec<char> = prev.chars().collect();
         for k in 1..=chars.len().min(MAX_CONTEXT) {
-            dec(&mut self.next, &(chars[chars.len() - k..].iter().collect::<String>(), word.to_string()));
+            dec_entry(&mut self.next, &(chars[chars.len() - k..].iter().collect::<String>(), word.to_string()));
         }
     }
 
@@ -69,13 +85,15 @@ impl UserModel {
     /// 记一次搭配:`prev` 是光标前已有的文字,其后上屏了 `word`。上文末尾 1–3 个字各记一条。
     pub fn learn_next(&mut self, prev: &str, word: &str) {
         let chars: Vec<char> = prev.chars().collect();
+        let today = self.today;
         for k in 1..=chars.len().min(MAX_CONTEXT) {
             let key = (chars[chars.len() - k..].iter().collect::<String>(), word.to_string());
             if self.next.len() >= MAX_COLLOCATIONS && !self.next.contains_key(&key) {
                 continue;
             }
-            let n = self.next.entry(key).or_insert(0);
-            *n = (*n + 1).min(MAX_COUNT);
+            let e = self.next.entry(key).or_insert(Entry { n: 0, day: today });
+            e.n = (e.n + 1).min(MAX_COUNT);
+            e.day = today;
         }
     }
 
@@ -83,9 +101,9 @@ impl UserModel {
     pub fn collocation(&self, prev: &str, word: &str) -> f64 {
         let chars: Vec<char> = prev.chars().collect();
         let best = (1..=chars.len().min(MAX_CONTEXT))
-            .filter_map(|k| self.next.get(&(chars[chars.len() - k..].iter().collect::<String>(), word.to_string())))
+            .filter_map(|k| self.next.get(&(chars[chars.len() - k..].iter().collect::<String>(), word.to_string())).map(|e| e.n))
             .max();
-        best.map_or(0.0, |&n| (COLLOCATION_SLOPE * f64::from(n + 1).ln()).min(COLLOCATION_CAP))
+        best.map_or(0.0, |n| (COLLOCATION_SLOPE * f64::from(n + 1).ln()).min(COLLOCATION_CAP))
     }
 
     /// 选中的候选用到了这些模糊规则(位掩码),各记一次。
@@ -115,8 +133,8 @@ impl UserModel {
     /// `typed` 对应 `word` 的加分,没学过为 0。
     pub fn bonus(&self, typed: &str, word: &str) -> f64 {
         let mut b = 0.0;
-        if let Some(&n) = self.pairs.get(&(typed.to_string(), word.to_string())) {
-            b += PAIR_BASE + PAIR_SLOPE * f64::from(n).ln();
+        if let Some(e) = self.pairs.get(&(typed.to_string(), word.to_string())) {
+            b += PAIR_BASE + PAIR_SLOPE * f64::from(e.n).ln();
         }
         if let Some(&n) = self.words.get(word) {
             b += WORD_BASE + f64::from(n).ln();
@@ -135,29 +153,31 @@ impl UserModel {
         out
     }
 
-    /// 序列化为 `拼音⇥词⇥次数` 行,便于存盘。
+    /// 序列化为 `拼音⇥词⇥次数⇥日` 行,便于存盘。
     pub fn export(&self) -> String {
-        let mut lines: Vec<String> = self.pairs.iter().map(|((t, w), n)| format!("{t}\t{w}\t{n}")).collect();
+        let mut lines: Vec<String> = self.pairs.iter().map(|((t, w), e)| format!("{t}\t{w}\t{}\t{}", e.n, e.day)).collect();
         lines.sort();
-        lines.extend(self.next.iter().map(|((p, w), n)| format!("@ng\t{p}\t{w}\t{n}")));
+        lines.extend(self.next.iter().map(|((p, w), e)| format!("@ng\t{p}\t{w}\t{}\t{}", e.n, e.day)));
         lines.sort();
         lines.extend(self.fuzzy.iter().enumerate().filter(|(_, &n)| n > 0).map(|(i, n)| format!("@fuzzy\t{i}\t{n}")));
         lines.join("\n")
     }
 
     /// 读回 `export` 的结果;坏行跳过。词层计数由精确层累加得出。
+    /// 缺日期列(旧格式)或日期无法解析时,最后使用日取 `today`。
     /// 上文含英文字母的搭配(旧版选英文候选后把 est 之类记作上文)丢弃。
-    pub fn import(text: &str) -> UserModel {
-        let mut m = UserModel::default();
+    pub fn import(text: &str, today: u32) -> UserModel {
+        let mut m = UserModel { today, ..UserModel::default() };
+        let day = |d: Option<&str>| d.and_then(|d| d.parse::<u32>().ok()).unwrap_or(today);
         for line in text.lines() {
             if let Some(rest) = line.strip_prefix("@ng\t") {
                 let c: Vec<&str> = rest.split('\t').collect();
-                if let [p, w, n] = c.as_slice() {
-                    if p.bytes().any(|b| b.is_ascii_alphabetic()) {
+                if let [p, w, n, more @ ..] = c.as_slice() {
+                    if more.len() > 1 || p.bytes().any(|b| b.is_ascii_alphabetic()) {
                         continue;
                     }
                     if let Ok(n) = n.parse::<u32>() {
-                        m.next.insert((p.to_string(), w.to_string()), n.min(MAX_COUNT));
+                        m.next.insert((p.to_string(), w.to_string()), Entry { n: n.min(MAX_COUNT), day: day(more.first().copied()) });
                     }
                 }
                 continue;
@@ -173,7 +193,7 @@ impl UserModel {
                 }
                 continue;
             }
-            m.pairs.insert((t.to_string(), w.to_string()), n);
+            m.pairs.insert((t.to_string(), w.to_string()), Entry { n, day: day(c.next()) });
             let e = m.words.entry(w.to_string()).or_insert(0);
             *e = (*e + n).min(MAX_COUNT);
         }
@@ -186,6 +206,16 @@ fn dec<K: std::hash::Hash + Eq>(map: &mut HashMap<K, u32>, key: &K) {
     if let Some(n) = map.get_mut(key) {
         *n -= 1;
         if *n == 0 {
+            map.remove(key);
+        }
+    }
+}
+
+/// 学习记录次数减一,归零删除;不存在则不动。日期不回退。
+fn dec_entry<K: std::hash::Hash + Eq>(map: &mut HashMap<K, Entry>, key: &K) {
+    if let Some(e) = map.get_mut(key) {
+        e.n -= 1;
+        if e.n == 0 {
             map.remove(key);
         }
     }
@@ -217,7 +247,7 @@ mod tests {
             m.learn_fuzzy(0b100);
         }
         assert_eq!(m.fuzzy_discount(0b100), FUZZY_DISCOUNT_CAP);
-        let back = UserModel::import(&m.export());
+        let back = UserModel::import(&m.export(), 0);
         assert_eq!(back.fuzzy_discount(0b100), FUZZY_DISCOUNT_CAP);
     }
 
@@ -234,7 +264,7 @@ mod tests {
             m.learn_next("我想", "吃饭");
         }
         assert_eq!(m.collocation("我想", "吃饭"), COLLOCATION_CAP);
-        let back = UserModel::import(&m.export());
+        let back = UserModel::import(&m.export(), 0);
         assert_eq!(back.collocation("我想", "吃饭"), COLLOCATION_CAP);
     }
 
@@ -258,16 +288,16 @@ mod tests {
         let mut m = UserModel::default();
         m.learn("ni", "你");
         m.learn("ni", "你");
-        let back = UserModel::import(&m.export());
+        let back = UserModel::import(&m.export(), 0);
         assert_eq!(back.bonus("ni", "你"), m.bonus("ni", "你"));
-        assert_eq!(UserModel::import("坏行\n").export(), "");
+        assert_eq!(UserModel::import("坏行\n", 0).export(), "");
     }
 
     #[test]
     fn 读回时丢掉上文含英文字母的个人搭配() {
         // 用户真实数据:选过英文候选 test/code 后记下了 est→编号、e全局→配只中
-        let m = UserModel::import("@ng\test\t编号\t1\n@ng\te全局\t配只中\t1\n@ng\t全局\t配置\t2\n");
-        assert_eq!(m.export(), "@ng\t全局\t配置\t2");
+        let m = UserModel::import("@ng\test\t编号\t1\n@ng\te全局\t配只中\t1\n@ng\t全局\t配置\t2\n", 0);
+        assert_eq!(m.export(), "@ng\t全局\t配置\t2\t0");
     }
 
     #[test]
@@ -284,5 +314,25 @@ mod tests {
         assert!(!m.knows("亲继续"));
         assert_eq!(m.collocation("是", "亲继续"), 0.0);
         assert!(m.bonus("qin", "请") > 0.0 && m.collocation("是", "请") > 0.0);
+    }
+
+    #[test]
+    fn 学习记下当天_导出带日期_导入保留日期() {
+        let mut m = UserModel::default();
+        m.set_today(20800);
+        m.learn("ni", "你");
+        m.learn_next("我", "你");
+        assert_eq!(m.export(), "@ng\t我\t你\t1\t20800\nni\t你\t1\t20800");
+        m.set_today(20810);
+        m.learn("ni", "你");
+        assert!(m.export().contains("ni\t你\t2\t20810"));
+        let back = UserModel::import(&m.export(), 20900);
+        assert_eq!(back.export(), m.export());
+    }
+
+    #[test]
+    fn 旧格式缺日期按读入当天() {
+        let m = UserModel::import("ni\t你\t3\n@ng\t我\t你\t2\n@ng\t我\t他\t1\t坏\n", 20800);
+        assert_eq!(m.export(), "@ng\t我\t他\t1\t20800\n@ng\t我\t你\t2\t20800\nni\t你\t3\t20800");
     }
 }

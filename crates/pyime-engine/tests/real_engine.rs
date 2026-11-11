@@ -14,7 +14,7 @@ fn 观察候选() {
     }
     // PYIME_USER 指定 user.txt 时带用户学习数据观察
     if let Ok(u) = std::env::var("PYIME_USER") {
-        engine.set_user(pyime_engine::user::UserModel::import(&std::fs::read_to_string(u).unwrap()));
+        engine.set_user(pyime_engine::user::UserModel::import(&std::fs::read_to_string(u).unwrap(), 0));
     }
     let inputs = std::env::var("PYIME_INPUTS").unwrap_or("nihao,zhongguo,zongguo,shurufa,surufa,women,fujian,husheng".into());
     for input in inputs.split(',') {

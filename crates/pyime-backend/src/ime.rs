@@ -11,7 +11,7 @@ use pyime_engine::user::UserModel;
 use std::cell::{Cell, RefCell};
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
-use std::time::SystemTime;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 pub struct Ime {
     engine: RefCell<Engine>,
@@ -150,6 +150,11 @@ fn symbols_path() -> Option<PathBuf> {
 /// 用户数据目录 `%LOCALAPPDATA%\PYIME` 下的文件。
 fn local_file(name: &str) -> Option<PathBuf> {
     std::env::var_os("LOCALAPPDATA").map(|p| PathBuf::from(p).join("PYIME").join(name))
+}
+
+/// 今天:自 1970-01-01(UTC)起的天数。
+pub fn now_day() -> u32 {
+    SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |d| (d.as_secs() / 86_400) as u32)
 }
 
 /// 文件的 (修改时间, 长度);不存在或取不到时为 None。
@@ -311,7 +316,7 @@ impl Ime {
     fn read_user(engine: &mut Engine, p: &Path) -> Option<(SystemTime, u64)> {
         match std::fs::read_to_string(p) {
             Ok(text) => {
-                engine.set_user(UserModel::import(&normalize_user(&text)));
+                engine.set_user(UserModel::import(&normalize_user(&text), now_day()));
                 stamp(p)
             }
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
@@ -379,7 +384,7 @@ impl Ime {
         };
         let text = normalize_user(&text);
         let mut engine = self.engine.borrow_mut();
-        engine.set_user(UserModel::import(&text));
+        engine.set_user(UserModel::import(&text, now_day()));
         engine.set_english(load_english(self.en_learned_path.as_ref()));
         self.user_stamp.set(stamp(path));
         self.skip_logged.set(false);

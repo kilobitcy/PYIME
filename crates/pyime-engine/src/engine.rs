@@ -237,6 +237,10 @@ impl Engine {
         &self.user
     }
 
+    pub fn user_mut(&mut self) -> &mut UserModel {
+        &mut self.user
+    }
+
     /// 用户上屏了 `text`(对应键入的 `typed`),记下以便下次提权。
     pub fn learn(&mut self, typed: &str, text: &str) {
         self.user.learn(typed, text);
