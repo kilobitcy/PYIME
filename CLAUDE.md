@@ -92,7 +92,7 @@ Windows 11 拼音输入法。目标:界面与功能像微信输入法一样简�
 - 菜单起的子进程(记事本/资源管理器)三路 stdio 置空(`ime.rs` `launch`);服务端经命名管道通信,不再有 stdin/stdout 管道句柄被继承的问题。
 
 ### user.txt 机制(据 `ime.rs`/`user.rs`)
-- pyime-server.exe(worker)启动时读 `user.txt`;每次选词把内存数据整份写回。
+- pyime-server.exe(worker)启动时读 `user.txt`;选词只置脏,由 hub 在空闲 1 s 或首次改动后 10 s 把内存数据整份写回。
 - 外部修改保护:记下上次读入/写盘后的 mtime 与长度,不一致即不写回(学习只留在内存),直到托盘菜单"重新加载用户词库"成功;启动时读不出(非 UTF-8)也不写回,不再丢数据。
 - 重新加载会去 BOM、CRLF→LF;非 UTF-8 时不读入、继续保护。"编辑用户词库…"先写盘、备份 `user.txt.bak`,再开记事本。
 - 启动时读入与重新加载同样规整(去 BOM、CRLF→LF,`ime.rs` `normalize_user`)。
