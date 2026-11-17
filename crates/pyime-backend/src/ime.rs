@@ -35,6 +35,8 @@ pub struct Ime {
     apps_path: Option<PathBuf>,
     /// 启动时文件读不出(如非 UTF-8):勾选只改内存,不覆盖用户的文件。
     apps_writable: Cell<bool>,
+    /// 候选每页个数(`fuzzy.txt` 的 `每页候选数=N` 行,缺省 `PAGE_SIZE_DEFAULT`)。
+    page_size: Cell<usize>,
     /// 测试用:记录"启动外部程序"而不真的启动。
     #[cfg(test)]
     launched: RefCell<Vec<String>>,
@@ -253,6 +255,20 @@ fn stash_off_in(text: &str) -> bool {
     text.trim_start_matches('\u{feff}').lines().any(|l| l.trim() == STASH_OFF)
 }
 
+/// `fuzzy.txt` 中候选每页个数的一行:`每页候选数=N`。缺省(或越界)时为 `PAGE_SIZE_DEFAULT`,等于缺省时不写。
+const PAGE_SIZE_KEY: &str = "每页候选数=";
+/// 每页候选数可选范围(数字键 1-9 选词,至多 9)与缺省值(与微信输入法一致)。
+pub const PAGE_SIZES: std::ops::RangeInclusive<usize> = 3..=9;
+pub const PAGE_SIZE_DEFAULT: usize = 6;
+
+fn page_size_in(text: &str) -> usize {
+    text.trim_start_matches('\u{feff}')
+        .lines()
+        .find_map(|l| l.trim().strip_prefix(PAGE_SIZE_KEY)?.trim().parse().ok())
+        .filter(|n| PAGE_SIZES.contains(n))
+        .unwrap_or(PAGE_SIZE_DEFAULT)
+}
+
 /// 读入模糊音开关;文件不存在时全开。
 fn read_fuzzy(engine: &mut Engine, user: Option<&Path>) {
     if let Some(t) = fuzzy_path(user).and_then(|p| read_optional(&p)) {
@@ -301,6 +317,7 @@ impl Ime {
     fn build(engine: Engine, user_path: Option<PathBuf>, en_learned_path: Option<PathBuf>, user_stamp: Option<(SystemTime, u64)>) -> Rc<Ime> {
         let apps_path = apps_path(user_path.as_deref());
         let (apps, apps_writable) = read_apps(apps_path.as_deref());
+        let page_size = fuzzy_path(user_path.as_deref()).and_then(|p| read_optional(&p)).map_or(PAGE_SIZE_DEFAULT, |t| page_size_in(&t));
         Rc::new(Ime {
             engine: RefCell::new(engine),
             user_path,
@@ -314,6 +331,7 @@ impl Ime {
             apps: RefCell::new(apps),
             apps_path,
             apps_writable: Cell::new(apps_writable),
+            page_size: Cell::new(page_size),
             #[cfg(test)]
             pressed: RefCell::new(Vec::new()),
             #[cfg(test)]
@@ -450,15 +468,38 @@ impl Ime {
         self.apply_fuzzy(cfg);
     }
 
+    /// 候选每页个数。
+    pub fn page_size(&self) -> usize {
+        self.page_size.get()
+    }
+
+    /// 菜单"每页候选数":即时生效并写 `fuzzy.txt`;不在 `PAGE_SIZES` 内的忽略。
+    pub fn set_page_size(&self, n: usize) {
+        if !PAGE_SIZES.contains(&n) {
+            return;
+        }
+        crate::log::line(&format!("菜单:每页候选数 {n}"));
+        self.page_size.set(n);
+        self.write_config();
+    }
+
     /// 启用新的模糊音/纠错配置并写 `fuzzy.txt`。
     fn apply_fuzzy(&self, cfg: FuzzyConfig) {
-        let mut text = cfg.export_off();
         self.engine.borrow_mut().set_fuzzy(cfg);
+        self.write_config();
+    }
+
+    /// 把模糊音/纠错开关与每页候选数写入 `fuzzy.txt`。
+    fn write_config(&self) {
+        let mut text = self.fuzzy().export_off();
         let Some(path) = fuzzy_path(self.user_path.as_deref()) else { return };
         // 托盘重写时保留用户手加的首键暂存开关
         if read_optional(&path).is_some_and(|t| stash_off_in(&t)) {
             text.push_str(STASH_OFF);
             text.push('\n');
+        }
+        if self.page_size() != PAGE_SIZE_DEFAULT {
+            text.push_str(&format!("{PAGE_SIZE_KEY}{}\n", self.page_size()));
         }
         let _ = path.parent().map(std::fs::create_dir_all);
         if let Err(e) = std::fs::write(&path, text) {

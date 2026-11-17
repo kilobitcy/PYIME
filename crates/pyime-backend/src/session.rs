@@ -29,8 +29,6 @@ const BACK_DEDUP: Duration = Duration::from_millis(15);
 const INJECT_ECHO: Duration = Duration::from_millis(300);
 /// 组合用的 Shift(按住打大写)松开后,这么短时间内又按下的单击 Shift 视为误触,不切中英文。
 const SHIFT_GUARD: Duration = Duration::from_millis(300);
-/// 候选横排,每页个数(与微信输入法一致)。
-const PAGE_SIZE: usize = 6;
 /// 候选窗字体与字号(PIME 只允许改这两项外观)。
 const CAND_FONT: &str = "Microsoft YaHei UI";
 const CAND_FONT_SIZE: i64 = 12; // 按微信输入法截图实测换算(候选字宽为原 16 号的 0.76 倍)
@@ -144,12 +142,13 @@ impl Session {
     }
 
     fn page_items(&self) -> &[Candidate] {
-        let start = (self.page * PAGE_SIZE).min(self.cands.len());
-        &self.cands[start..(start + PAGE_SIZE).min(self.cands.len())]
+        let size = self.ime.page_size();
+        let start = (self.page * size).min(self.cands.len());
+        &self.cands[start..(start + size).min(self.cands.len())]
     }
 
     fn page_count(&self) -> usize {
-        self.cands.len().div_ceil(PAGE_SIZE)
+        self.cands.len().div_ceil(self.ime.page_size())
     }
 
     /// 该键是否由输入法接管(拼音串存在时,编辑/翻页/数字键也接管;Ctrl+数字不选词,Ctrl+Shift+数字删除学习)。
@@ -253,7 +252,7 @@ impl Session {
             }
             "onDeactivate" if self.win8 => resp["removeButton"] = json!([tray::MODE_ICON]),
             "onMenu" if req["id"] == tray::MODE_ICON => {
-                resp["return"] = tray::menu(self.ime.user_file_changed(), &self.ime.fuzzy(), &self.exe, self.ime.is_chinese_app(&self.exe))
+                resp["return"] = tray::menu(self.ime.user_file_changed(), &self.ime.fuzzy(), &self.exe, self.ime.is_chinese_app(&self.exe), self.ime.page_size())
             }
             "onCommand" => self.on_command(req, &mut resp),
             _ => {}
@@ -324,6 +323,10 @@ impl Session {
             }
             (tray::CMD_TYPO, tray::COMMAND_MENU) => {
                 self.ime.toggle_typo();
+                true
+            }
+            (id, tray::COMMAND_MENU) if crate::ime::PAGE_SIZES.contains(&(id.wrapping_sub(tray::CMD_PAGE) as usize)) => {
+                self.ime.set_page_size((id - tray::CMD_PAGE) as usize);
                 true
             }
             (id, tray::COMMAND_MENU) if (tray::CMD_FUZZY..tray::CMD_FUZZY + 10).contains(&id) => {
@@ -466,7 +469,7 @@ impl Session {
         let c = self.page_items().get(idx)?.clone();
         let tops: Vec<&str> = self.cands.iter().map(|c| c.text.as_str()).collect();
         let (input, ctx) = (self.input.clone(), self.prev());
-        let index = self.page * PAGE_SIZE + idx;
+        let index = self.page * self.ime.page_size() + idx;
         let typed: String = self.input.drain(..c.consumed).collect();
         crate::inputlog::select(&input, &ctx, &typed, &c.text, index, &tops, c.fixed.as_deref());
         // 符号不学习;它吃满剩余输入,必是本次组词的最后一段
@@ -674,7 +677,7 @@ impl Session {
             let texts: Vec<&str> = self.page_items().iter().map(|c| c.text.as_str()).collect();
             resp["candidateList"] = json!(texts);
             resp["candidateCursor"] = json!(self.cursor);
-            resp["customizeUI"] = json!({ "candUseCursor": true, "candPerRow": PAGE_SIZE, "candFontName": CAND_FONT, "candFontSize": CAND_FONT_SIZE });
+            resp["customizeUI"] = json!({ "candUseCursor": true, "candPerRow": self.ime.page_size(), "candFontName": CAND_FONT, "candFontSize": CAND_FONT_SIZE });
         }
     }
 }

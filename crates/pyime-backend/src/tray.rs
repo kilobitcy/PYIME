@@ -17,6 +17,8 @@ pub const CMD_CHINESE_APP: u64 = 14;
 pub const CMD_TYPO: u64 = 15;
 /// 模糊音子菜单:第 i 对规则的 id 为 `CMD_FUZZY + i`(i < 10,下标同 `FuzzyConfig::rule_names`)。
 pub const CMD_FUZZY: u64 = 20;
+/// 每页候选数子菜单:选 n 个的 id 为 `CMD_PAGE + n`。
+pub const CMD_PAGE: u64 = 40;
 /// onCommand 的 type(libIME2 `TextService::CommandType`)。
 pub const COMMAND_LEFT_CLICK: u64 = 0;
 pub const COMMAND_MENU: u64 = 2;
@@ -46,14 +48,15 @@ pub fn mode_change(english: bool) -> Value {
 }
 
 /// 右键菜单;`user_changed` 为真(user.txt 被外部修改、尚未重载)时重载项带提示;`fuzzy` 决定模糊音子菜单与按键纠错的勾选;
-/// `exe` 为宿主程序名(空则"本程序默认中文"置灰),`chinese_app` 为它是否在默认中文列表里。
-pub fn menu(user_changed: bool, fuzzy: &FuzzyConfig, exe: &str, chinese_app: bool) -> Value {
+/// `exe` 为宿主程序名(空则"本程序默认中文"置灰),`chinese_app` 为它是否在默认中文列表里;`page_size` 为当前每页候选数。
+pub fn menu(user_changed: bool, fuzzy: &FuzzyConfig, exe: &str, chinese_app: bool, page_size: usize) -> Value {
     let reload = if user_changed { "重新加载用户词库(文件已修改)" } else { "重新加载用户词库" };
     let rules: Vec<Value> = FuzzyConfig::rule_names()
         .into_iter()
         .enumerate()
         .map(|(i, n)| json!({ "text": n, "id": CMD_FUZZY + i as u64, "checked": fuzzy.is_on(i) }))
         .collect();
+    let pages: Vec<Value> = crate::ime::PAGE_SIZES.map(|n| json!({ "text": n.to_string(), "id": CMD_PAGE + n as u64, "checked": n == page_size })).collect();
     let app = if exe.is_empty() {
         json!({ "text": "本程序默认中文", "id": CMD_CHINESE_APP, "enabled": false })
     } else {
@@ -64,6 +67,7 @@ pub fn menu(user_changed: bool, fuzzy: &FuzzyConfig, exe: &str, chinese_app: boo
         {},
         { "text": "模糊音", "submenu": rules },
         { "text": "按键纠错", "id": CMD_TYPO, "checked": fuzzy.typo },
+        { "text": "每页候选数", "submenu": pages },
         app,
         {},
         { "text": "编辑用户词库…", "id": CMD_EDIT_USER },

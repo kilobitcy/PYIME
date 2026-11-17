@@ -929,7 +929,7 @@ fn 右键菜单含版本与三项命令() {
     assert_eq!(m[0]["enabled"], false);
     assert_eq!(m[1], json!({}));
     let texts: Vec<&str> = m.iter().filter_map(|i| i["text"].as_str()).collect();
-    assert_eq!(texts[1..], ["模糊音", "按键纠错", "本程序默认中文", "编辑用户词库…", "重新加载用户词库", "打开数据目录"]);
+    assert_eq!(texts[1..], ["模糊音", "按键纠错", "每页候选数", "本程序默认中文", "编辑用户词库…", "重新加载用户词库", "打开数据目录"]);
     assert!(m.iter().filter(|i| i.get("text").is_some() && i.get("submenu").is_none()).all(|i| i["id"].as_u64().unwrap() >= 1));
 }
 
@@ -986,7 +986,7 @@ fn 菜单命令分发到编辑_重载与打开目录() {
     assert_eq!(s.ime.take_launched(), vec![format!("notepad.exe {}", p.display())]);
     std::fs::write(&p, "ni\t泥\t9").unwrap();
     let r = s.handle(&json!({"method": "onMenu", "seqNum": 7, "id": "windows-mode-icon"}));
-    assert_eq!(r["return"][7]["text"], "重新加载用户词库(文件已修改)");
+    assert_eq!(r["return"][8]["text"], "重新加载用户词库(文件已修改)");
     assert_eq!(menu_cmd(&mut s, 12)["return"], true);
     assert!(s.ime.user_export().contains("ni\t泥\t9"));
     assert_eq!(menu_cmd(&mut s, 13)["return"], true);
@@ -1291,4 +1291,42 @@ fn fuzzy含首键暂存行即关闭_托盘重写后保留() {
     assert_eq!(std::fs::read_to_string(&f).unwrap(), "纠错\n首键暂存\n");
     assert_eq!(menu_cmd(&mut s, tray::CMD_FUZZY + 4)["return"], true);
     assert_eq!(std::fs::read_to_string(&f).unwrap(), "r=l\n纠错\n首键暂存\n");
+}
+
+/// 右键菜单"每页候选数"子菜单中勾选的数目。
+fn page_checked(s: &mut Session) -> Vec<String> {
+    let r = s.handle(&json!({"method": "onMenu", "seqNum": 5, "id": "windows-mode-icon"}));
+    let m = r["return"].as_array().unwrap().iter().find(|i| i["text"] == "每页候选数").unwrap().clone();
+    m["submenu"].as_array().unwrap().iter().filter(|i| i["checked"] == true).map(|i| i["text"].as_str().unwrap().to_string()).collect()
+}
+
+#[test]
+fn 每页候选数菜单切换并写盘_重启后保持() {
+    let p = crate::ime::temp_user_path("page-size");
+    let f = p.with_file_name("fuzzy.txt");
+    let mut s = Session::new(Ime::with_user_path(engine(), p.clone()));
+    assert_eq!(page_checked(&mut s), ["6"]);
+    assert_eq!(menu_cmd(&mut s, tray::CMD_PAGE + 4)["return"], true);
+    assert_eq!(std::fs::read_to_string(&f).unwrap(), "每页候选数=4\n");
+    let r = press(&mut s, &[N, I]);
+    assert_eq!(r["candidateList"], json!(["你", "泥", "尼", "拟"]));
+    assert_eq!(r["customizeUI"]["candPerRow"], 4);
+    // 翻页按新数目
+    let r = key(&mut s, "onKeyDown", VK_EQUALS);
+    assert_eq!(r["candidateList"], json!(["逆", "腻", "匿", "溺"]));
+    // 改模糊音时保留这一行
+    assert_eq!(menu_cmd(&mut s, tray::CMD_TYPO)["return"], true);
+    assert_eq!(std::fs::read_to_string(&f).unwrap(), "纠错\n每页候选数=4\n");
+    let mut s = Session::new(Ime::with_user_path(engine(), p.clone()));
+    assert_eq!(page_checked(&mut s), ["4"]);
+    menu_cmd(&mut s, tray::CMD_PAGE + 6);
+    assert_eq!(std::fs::read_to_string(&f).unwrap(), "纠错\n");
+}
+
+#[test]
+fn 每页候选数行越界按默认() {
+    let p = crate::ime::temp_user_path("page-size-bad");
+    std::fs::write(p.with_file_name("fuzzy.txt"), "每页候选数=20\n").unwrap();
+    let mut s = Session::new(Ime::with_user_path(engine(), p));
+    assert_eq!(page_checked(&mut s), ["6"]);
 }
