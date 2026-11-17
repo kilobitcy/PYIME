@@ -14,7 +14,7 @@ Windows 11 拼音输入法。目标:界面与功能像微信输入法一样简�
 
 ## Project Layout
 - `crates/pyime-engine`:引擎(`dict` fst 词典、`rime` 词库导入、`pinyin` 音节表与切分格、`fuzzy` 10 对模糊音、`engine` 候选生成与整句 Viterbi、`user` 用户学习、`english` 英文词表与回车学习、`symbol` 符号表(精确整段词后附加符号)、`typo` 按键纠错(输入能完整切成音节且无精确整段词时,查改一处的整段词,第 2 位));`pyime-dict-build` 编译词典、`pyime-en-build` 编译英文词表 `pyime.en`(自带 IT 词表 `installer/en_it.txt`)。
-- `crates/pyime-backend`:服务进程 `pyime-server.exe`(`--supervise` 监护并重启 worker,`supervise.rs`;`--worker` 管道服务端 `pipe.rs` + `session`/`ime`/`tray`/`log`;`--quit` 让监护进程连同 worker 退出);词典 `pyime.dict`、英文词表 `pyime.en`、符号表 `symbols.txt`(自带 `installer/symbols.txt`)放在 `pyime-server.exe` 同目录,用户数据 `%LOCALAPPDATA%\PYIME\user.txt`,用户英文词表 `en.txt`、回车学习计数 `en_learned.txt`、模糊音开关 `fuzzy.txt`(每行一个关闭的规则名,如 `r=l`;含一行 `纠错` 表示关闭按键纠错;含一行 首键暂存 表示关闭首键暂存补发,改后重启输入法生效;不存在即全开)同目录、默认中文程序列表 `chinese-apps.txt`(每行一个 exe 名,不分大小写;不在表的程序默认英文;文件不存在时写入 Weixin.exe/WeChat.exe/wps.exe/et.exe/wpp.exe,想全英文请留空文件)。
+- `crates/pyime-backend`:服务进程 `pyime-server.exe`(`--supervise` 监护并重启 worker,`supervise.rs`;`--worker` 管道服务端 `pipe.rs` + `session`/`ime`/`tray`/`log`;`--quit` 让监护进程连同 worker 退出);词典 `pyime.dict`、英文词表 `pyime.en`、符号表 `symbols.txt`(自带 `installer/symbols.txt`)放在 `pyime-server.exe` 同目录,用户数据 `%LOCALAPPDATA%\PYIME\user.txt`,用户英文词表 `en.txt`、回车学习计数 `en_learned.txt`、模糊音开关 `fuzzy.txt`(每行一个关闭的规则名,如 `r=l`;含一行 `纠错` 表示关闭按键纠错;含一行 首键暂存 表示关闭首键暂存补发,改后重启输入法生效;含一行 `每页候选数=N`(3–9,缺省 6 不写)设每页候选数;不存在即全开)同目录、默认中文程序列表 `chinese-apps.txt`(每行一个 exe 名,不分大小写;不在表的程序默认英文;文件不存在时写入 Weixin.exe/WeChat.exe/wps.exe/et.exe/wpp.exe,想全英文请留空文件)。
 - `scripts/package.sh <版本>`:测试 + 交叉编译 + 编词典 + makensis 一条龙(rime-ice 默认在 /tmp/rime-ice)。
 - `scripts/windows/`:托盘菜单不可用(输入法卡死)时的备用办法,用户手工改 `user.txt` 后使其生效(`edit-user.bat` 停输入法→记事本编辑→重启;`reload-user.bat` 直接重启;逻辑在 `user-reload.ps1`,含备份、UTF-8 校验、去 BOM/CRLF)。ps1 须存为 UTF-8 BOM + CRLF,bat 保持纯 ASCII。
 - 调参观察:`PYIME_DICT=… cargo test -p pyime-engine --release --test real_engine -- --ignored --nocapture`(`PYIME_INPUTS` 指定拼音)。
@@ -86,7 +86,7 @@ Windows 11 拼音输入法。目标:界面与功能像微信输入法一样简�
 
 ### 托盘图标与菜单(设计 `docs/superpowers/specs/2026-10-22-tray-menu-design.md`)
 - Win8+ 托盘 `windows-mode-icon`:`onActivate` 加、`onDeactivate` 删;左键切中英(组字中忽略:onCommand 回复无编辑会话);Shift 切换同步 `changeButton`。单击 Shift 在带编辑会话的 `onKeyUp` 切换(`filterKeyUp` 只回 true),回复带 `showMessage` 在光标旁闪"中/英"约 1 秒;托盘、菜单切换不提示。
-- 右键菜单:版本(置灰)/模糊音 ▸(10 对逐项勾选,即时生效、写 `fuzzy.txt`;0.1.16 加,待实机验证)/按键纠错(勾选即开,写 `fuzzy.txt`;待实机验证)/本程序默认中文(<exe>)(勾选即写 chinese-apps.txt 并切当前会话;组字中只改列表;取不到 exe 置灰;0.1.17 加,待实机验证)/编辑用户词库…/重新加载用户词库/打开数据目录;命令 id 见 `tray.rs`。
+- 右键菜单:版本(置灰)/模糊音 ▸(10 对逐项勾选,即时生效、写 `fuzzy.txt`;0.1.16 加,待实机验证)/按键纠错(勾选即开,写 `fuzzy.txt`;待实机验证)/每页候选数 ▸(3–9 单选,即时生效、写 `fuzzy.txt`;0.1.23 加,待实机验证)/本程序默认中文(<exe>)(勾选即写 chinese-apps.txt 并切当前会话;组字中只改列表;取不到 exe 置灰;0.1.17 加,待实机验证)/编辑用户词库…/重新加载用户词库/打开数据目录;命令 id 见 `tray.rs`。
 - 图标为 PIME 原版黑字,深色任务栏可读性待实机确认。
 - `onCommand`/`onMenu` 回复无 EditSession,不得带 `showMessage`/`commitString`/`compositionString`/候选(`tsf/` 下 `PIMEClient.cpp` 的 `updateMessageWindow` 在判空前执行,会崩宿主)。
 - 菜单起的子进程(记事本/资源管理器)三路 stdio 置空(`ime.rs` `launch`);服务端经命名管道通信,不再有 stdin/stdout 管道句柄被继承的问题。
@@ -113,3 +113,4 @@ Windows 11 拼音输入法。目标:界面与功能像微信输入法一样简�
 - 未经输入法字母键拦截补发(2026-11-08,设计 `docs/superpowers/specs/2026-11-08-missed-key-replay-design.md`):0.1.19 实机日志证实记事本里首键按下进了本线程消息队列、焦点文档与 HIMC 都在,TSF 却没交给本模块(Mullion"无 HIMC"推测不成立);钩子取出该键 WM_CHAR 时拦下、经首键暂存补发。已合并 main,0.1.20 测试包已打(2026-11-08)。0.1.20 实机见立即补发的键同样未经输入法(窗口刚取得焦点时 TSF 一小段时间不接键),改为延后补发(200 ms 或下一个键到输入法时,2026-11-09 合并 main);0.1.21 测试包已打(版本号改动未提交),待按 `test-kit/tsf.txt` 第十二节实机验证。
 - 微信 4.2 成对括号后 Shift 卡住(2026-11-11,已实机验证修复):Shift+9 后连打 1 得 `（）！！！1！`。日志证实服务端在 onKeyDown 里同步 `SendInput` 被拖约 1.24s(推断为宿主低级键盘钩子在等回复的线程上),注入序列与用户按键交错,注入的 Shift↓ 落在用户 Shift↑ 之后。改为专用线程按序注入(`ime.rs` `send_key_async`),回复先发出;实测 SendInput 3.4ms、顺序正确、光标回到括号中间。注入时日志记物理 Shift、注入条数与耗时。
 - user.txt 老化淘汰与空闲写盘(2026-11-11,分支 user-aging,设计 `docs/superpowers/specs/2026-11-11-user-aging-design.md`):用户真实 user.txt 模拟 60 天后淘汰词对 2933、搭配 26274,文件 636 KB→94 KB;带该文件 4252 个拼音候选与改动前一致(仅既有的同分并列顺序波动,新旧版本同样存在)。已随 0.1.22 发布(2026-11-12,tag v0.1.22,含 0.1.19–0.1.21 测试版内容);待实机验证(选词后约 1 s 文件更新、托盘重新加载/编辑行为不变)。
+- 0.1.23(2026-11-17):① 精确吃满整段输入的键不再按 `PER_KEY`=8 截断(`yuan` 下排第 18 的 苑 翻页可见;回归零变化);候选总数仍受 `MAX_CANDIDATES`=60 限制,`yi`/`ji` 等单音节 60 名后的生僻字仍翻不到。② TSF:`customizeUI` 改在画候选窗前应用,修新 TextService 第一个候选窗用宋体、无高亮。③ 托盘"每页候选数"。三项均待实机验证。
