@@ -376,6 +376,14 @@ void Client::updateStatus(Json::Value& msg, Ime::EditSession* session) {
     bool endComposition = false;
     updateMessageWindow(msg, session, endComposition);
 
+	// other configurations
+	// PYIME:须在 updateCandidateList 之前应用,否则新 TextService 的第一个候选窗按默认字体(宋体)、无高亮画出
+	const auto& customizeUIVal = msg["customizeUI"];
+	if (customizeUIVal.isObject()) {
+		// customize the UI
+		updateUI(customizeUIVal);
+	}
+
 	if (session != nullptr) { // if an edit session is available
         updateCandidateList(msg, session);
 
@@ -392,13 +400,6 @@ void Client::updateStatus(Json::Value& msg, Ime::EditSession* session) {
 
 	// keyboard status
     updateKeyboardStatus(msg);
-
-	// other configurations
-	const auto& customizeUIVal = msg["customizeUI"];
-	if (customizeUIVal.isObject()) {
-		// customize the UI
-		updateUI(customizeUIVal);
-	}
 }
 
 void Client::updateCandidateList(Json::Value& msg, Ime::EditSession* session) {
