@@ -311,8 +311,9 @@ impl Engine {
     }
 
     /// 同一键取词频前 `PER_KEY` 个,再补上更靠后但用户学过的词(否则截断会让学习加分落空)。
-    fn top_entries(&self, key: &str) -> Vec<crate::dict::Entry> {
-        self.dict.get(key).into_iter().enumerate().filter(|(i, e)| *i < PER_KEY || self.user.knows(&e.word)).map(|(_, e)| e).collect()
+    /// `all` 为真时不截断(精确吃满整段输入的键,翻页要能找到生僻字)。
+    fn top_entries(&self, key: &str, all: bool) -> Vec<crate::dict::Entry> {
+        self.dict.get(key).into_iter().enumerate().filter(|(i, e)| all || *i < PER_KEY || self.user.knows(&e.word)).map(|(_, e)| e).collect()
     }
 
     /// 再走一个音节:累加模糊次数、规则位,以及这些规则的个人偏好折扣。
@@ -335,7 +336,7 @@ impl Engine {
             let next = if key.is_empty() { syl.to_string() } else { format!("{key} {syl}") };
             let mut a = self.step(acc, c, m);
             a.splits += u8::from(!key.is_empty() && steals(input, acc.prev, pos, true));
-            for e in self.top_entries(&next) {
+            for e in self.top_entries(&next, false) {
                 let bonus = self.user.bonus(&input[start..], &e.word);
                 let score = f64::from(e.weight.max(1)).ln() - self.penalty(key.is_empty()) * f64::from(a.fuzzy) + a.discount - SPLIT_PENALTY * f64::from(a.splits) - PARTIAL_PENALTY + bonus - if key.is_empty() { SINGLE_CHAR_DISCOUNT } else { 0.0 };
                 out.push(Word { start, end: input.len(), text: e.word, score, fuzzy: a.fuzzy, pairs: a.pairs, cuts: cuts.to_vec(), partial: true, learned: false, last: pos, bonus });
@@ -365,7 +366,7 @@ impl Engine {
                 }
                 let mut a = self.step(acc, c, m);
                 a.splits += u8::from(depth > 0 && steals(input, acc.prev, pos, false));
-                let entries = if tail.is_some() && end < input.len() { Vec::new() } else { self.top_entries(&next) };
+                let entries = if tail.is_some() && end < input.len() { Vec::new() } else { self.top_entries(&next, tail.is_none() && start == 0 && end == input.len() && a.fuzzy == 0) };
                 for e in entries {
                     let bonus = self.user.bonus(&input[start..end], &e.word);
                     let learned = a.fuzzy > 0 && self.user.chose(&input[start..end], &e.word);
@@ -811,6 +812,15 @@ mod tests {
         assert_eq!(texts(&e, "nishi")[0], "你是");
         e.learn("shi", "氏");
         assert_eq!(texts(&e, "nishi")[0], "你氏");
+    }
+
+    #[test]
+    fn 精确吃满输入的键不截断() {
+        // "yuan" 下 10 个字,"苑" 排第 10,超出 PER_KEY;单独打 yuan 时翻页应能找到
+        let words = ["原", "远", "员", "元", "院", "愿", "园", "源", "圆", "苑"];
+        let v: Vec<(&str, &str, u32)> = words.iter().enumerate().map(|(i, w)| ("yuan", *w, 5000 - i as u32 * 10)).collect();
+        let e = engine(&v);
+        assert!(texts(&e, "yuan").contains(&"苑".to_string()));
     }
 
     #[test]
