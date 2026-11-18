@@ -59,6 +59,11 @@ const TYPO_MAX: usize = 2;
 /// 触发纠错的输入长度范围(字节)。
 const TYPO_MIN_LEN: usize = 4;
 const TYPO_MAX_LEN: usize = 12;
+/// 原串切不成音节时纠错的输入长度上限(字节):只有能切开的变体才算候选,开销可控。
+const TYPO_UNSEGMENTED_MAX_LEN: usize = 24;
+/// 原串切不成音节时,纠错候选每字平均得分须不低于此值。真实词典上:中文支持 -2.9、推荐 -2.4、推荐可 -4.0;
+/// 拼凑:mullion→目里弄 -4.3、pyime→一门 -4.5、hello→合拢 -5.8。
+const TYPO_UNSEGMENTED_MIN_PER_CHAR: f64 = -4.2;
 
 /// 选中整句时顺带学习的一项:(拼音片段, 词, 上文)。
 pub type Lesson = (String, String, String);
@@ -393,8 +398,13 @@ impl Engine {
     pub fn candidates_after(&self, input: &str, context: &str) -> Vec<Candidate> {
         let words = self.words(input, context);
         let (mut out, best_sentence) = self.assemble(input, &words);
-        // 按键纠错候选插在第 2 位起;原本没有候选时不插,保持空格原样上屏字母
-        if !out.is_empty() {
+        if cover(&words, input.len()) == Cover::None {
+            // 切不成音节(zhogn 打反了字母):纠正后的整句/整段词放最前;英文随后仍插在它前面
+            for (i, c) in self.typo_unsegmented(input, context).into_iter().enumerate() {
+                out.insert(i, c);
+            }
+        } else if !out.is_empty() {
+            // 按键纠错候选插在第 2 位起;原本没有候选时不插,保持空格原样上屏字母
             let fixes = self.typo(input, &words, best_sentence, &out);
             for (i, c) in fixes.into_iter().enumerate() {
                 out.insert(1 + i, c);
@@ -518,6 +528,49 @@ impl Engine {
             out.push(Candidate { text: w.text, consumed: len, fuzzy: w.fuzzy, pairs: w.pairs, cuts: Vec::new(), parts: Vec::new(), source: Source::Typo, fixed: Some(fixed) });
         }
         out
+    }
+
+    /// 按键纠错(原串切不成音节时):对"只改一处"、能切成音节(末尾可残缺)的变体各取首个吃满的候选,
+    /// 按变体的最佳得分(整段词口径或整句)取至多 `TYPO_MAX` 个;每字平均分低于 `TYPO_UNSEGMENTED_MIN_PER_CHAR` 的
+    /// (英文串、拼凑出的生僻组合)不出。
+    fn typo_unsegmented(&self, input: &str, context: &str) -> Vec<Candidate> {
+        let len = input.len();
+        if !self.cfg.typo || !(TYPO_MIN_LEN..=TYPO_UNSEGMENTED_MAX_LEN).contains(&len) {
+            return Vec::new();
+        }
+        let mut found: Vec<(f64, Candidate)> = Vec::new();
+        for fixed in edits(input) {
+            if !self.tails_loose(&fixed)[0] {
+                continue;
+            }
+            let words = self.words(&fixed, context);
+            let (cands, best_sentence) = self.assemble(&fixed, &words);
+            let Some(top) = cands.into_iter().find(|c| c.consumed == fixed.len()) else { continue };
+            let whole = words.iter().filter(|w| w.start == 0 && w.end == fixed.len()).map(|w| w.score - WORD_COST);
+            let score = whole.chain(best_sentence).fold(f64::MIN, f64::max);
+            if score / (top.text.chars().count() as f64) < TYPO_UNSEGMENTED_MIN_PER_CHAR {
+                continue;
+            }
+            found.push((score, Candidate { consumed: len, cuts: Vec::new(), parts: Vec::new(), source: Source::Typo, fixed: Some(fixed), ..top }));
+        }
+        found.sort_by(|a, b| b.0.total_cmp(&a.0));
+        let mut out: Vec<Candidate> = Vec::new();
+        for (_, c) in found {
+            if out.len() < TYPO_MAX && !out.iter().any(|o| o.text == c.text) {
+                out.push(c);
+            }
+        }
+        out
+    }
+
+    /// 同 `tails`,但末尾允许残缺音节(某音节的开头)。
+    fn tails_loose(&self, input: &str) -> Vec<bool> {
+        let mut tail = vec![false; input.len() + 1];
+        tail[input.len()] = true;
+        for a in (0..input.len()).rev() {
+            tail[a] = spellings_at(input, a, &self.cfg).iter().any(|s| tail[a + s.len()]) || !partial(&input[a..], &self.cfg).is_empty();
+        }
+        tail
     }
 
     /// 第 i 项:`input[i..]` 能否切成完整音节(含模糊后才合法的写法,与 `grow` 一致);末项为真。
@@ -1249,6 +1302,18 @@ mod tests {
     }
 
     #[test]
+    fn 切不成音节的输入纠错后出整句并排首位() {
+        // zhogn 是 zhong 打反了 g、n:原串没有任何候选,纠正后的整句 中文支持 排第一
+        let mut e = engine(&[("zhong wen", "中文", 500_000), ("zhi chi", "支持", 500_000), ("zhong", "中", 90_000), ("wen", "问", 90_000)]);
+        let c = e.candidates("zhognwenzhichi");
+        assert_eq!((c[0].text.as_str(), c[0].source, c[0].fixed.as_deref()), ("中文支持", Source::Typo, Some("zhongwenzhichi")));
+        assert_eq!(c[0].consumed, 14);
+        assert_eq!(e.candidates("zhognwen")[0].text, "中文");
+        e.set_fuzzy(FuzzyConfig { typo: false, ..FuzzyConfig::default() });
+        assert!(!has_typo(&e, "zhognwenzhichi"));
+    }
+
+    #[test]
     fn 有精确整段词时不纠() {
         assert!(!has_typo(&typo_engine(&[("tuo jian", "拖建", 10)]), "tuojian"));
     }
@@ -1273,8 +1338,17 @@ mod tests {
     }
 
     #[test]
-    fn 原有候选为空时不插() {
-        assert!(typo_engine(&[]).candidates("thuijian").is_empty());
+    fn 原有候选为空时纠错放首位() {
+        // thuijian 的 th 切不出音节,原本没有候选;删掉 h 得 推荐
+        let c = engine(&[("tuo", "拖", 8000), ("jian", "见", 8000), ("tui jian", "推荐", 500_000)]).candidates("thuijian");
+        assert_eq!((c[0].text.as_str(), c[0].source, c[0].fixed.as_deref()), ("推荐", Source::Typo, Some("tuijian")));
+    }
+
+    #[test]
+    fn 切不成音节时低分拼凑不纠() {
+        // hello 删一个 l 得 helo = 和 咯,两个低频单字拼凑,每字平均分过低,不出
+        let e = engine(&[("he", "和", 10), ("lo", "咯", 10)]);
+        assert!(!has_typo(&e, "hello"));
     }
 
     #[test]
@@ -1285,9 +1359,10 @@ mod tests {
     }
 
     #[test]
-    fn 切不全的输入不纠() {
-        // tuijain 切不成完整音节(英文串多是这样),对调 ai 可得 tuijian,也不纠
-        assert!(!has_typo(&typo_engine(&[("tui", "推", 8000)]), "tuijain"));
+    fn 切不全的输入纠错放首位() {
+        // tuijain 切不成完整音节,对调 ai 得 tuijian
+        let c = engine(&[("tui", "推", 8000), ("tui jian", "推荐", 500_000)]).candidates("tuijain");
+        assert_eq!((c[0].text.as_str(), c[0].fixed.as_deref()), ("推荐", Some("tuijian")));
     }
 
     #[test]

@@ -12,6 +12,10 @@ fn 观察候选() {
     if let Ok(g) = std::env::var("PYIME_GRAM") {
         engine.set_gram(pyime_engine::gram::Gram::from_bytes(std::fs::read(g).unwrap()).unwrap());
     }
+    // PYIME_EN 指定英文词表 pyime.en 时一并观察英文候选
+    if let Ok(p) = std::env::var("PYIME_EN") {
+        engine.set_english(pyime_engine::english::English::new(pyime_engine::english::parse_compiled(&std::fs::read_to_string(p).unwrap())));
+    }
     // PYIME_USER 指定 user.txt 时带用户学习数据观察
     if let Ok(u) = std::env::var("PYIME_USER") {
         engine.set_user(pyime_engine::user::UserModel::import(&std::fs::read_to_string(u).unwrap(), 0));
