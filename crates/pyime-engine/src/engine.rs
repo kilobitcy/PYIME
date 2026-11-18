@@ -32,7 +32,9 @@ const SENTENCES: usize = 3;
 /// 整句排序时精确整句的领先分:模糊整句得分须高出这么多才排到它前面。
 const SENTENCE_EXACT_MARGIN: f64 = 1.5;
 /// 整句中单字词的个人学习加分上限(自然对数域)。
-const SENTENCE_CHAR_BONUS_CAP: f64 = 5.0;
+const SENTENCE_CHAR_BONUS_CAP: f64 = 4.0;
+/// 整句中多字词的个人学习加分上限:学过的词在句中不应无条件压过词库里更贴切的词(经理 压 尽力)。
+const SENTENCE_WORD_BONUS_CAP: f64 = 8.0;
 /// 束宽:整句搜索每个位置保留的路径数。
 const BEAM: usize = 12;
 /// 模糊/残缺路径的束宽。
@@ -606,8 +608,9 @@ fn sentences(input: &str, words: &[Word], far: usize, bigram: &dyn Fn(&str, &str
     for &i in &order {
         let w = &words[i];
         let mut next = Vec::new();
-        // 单字的个人学习加分在句中封顶:单独选过的字不应凭学习分压过多字词
-        let excess = if w.text.chars().count() == 1 { (w.bonus - SENTENCE_CHAR_BONUS_CAP).max(0.0) } else { 0.0 };
+        // 个人学习加分在句中封顶:单独选过的字/词不应凭学习分压过别的读法
+        let cap = if w.text.chars().count() == 1 { SENTENCE_CHAR_BONUS_CAP } else { SENTENCE_WORD_BONUS_CAP };
+        let excess = (w.bonus - cap).max(0.0);
         if w.start == 0 {
             next.push((w.score - excess - WORD_COST, i, 0, tail(&w.text), w.loose()));
         } else {
