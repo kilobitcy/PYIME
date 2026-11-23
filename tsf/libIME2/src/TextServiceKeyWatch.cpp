@@ -1,7 +1,7 @@
 // PYIME:漏键诊断。本线程 WH_GETMESSAGE 钩子(不是全局钩子)看到字母键,而输入法按键入口始终没收到时,
 // 在 tsf.log 记一条(不记是哪个键)。判定逻辑在 PIMETextService/MissedKeyWatch.h,设计见
 // docs/superpowers/specs/2026-11-05-first-key-stash-design.md 需求 2。
-// 取出 WM_CHAR 时若对应字母键按下未经输入法,拦下字符、经首键暂存补发(设计 2026-11-08-missed-key-replay-design.md)。
+// 取出 WM_CHAR 时若对应字母键或中文标点键按下未经输入法,拦下字符、经首键暂存补发(设计 2026-11-08-missed-key-replay-design.md)。
 #include "TextService.h"
 #include <imm.h>
 #include <cstdio>
@@ -44,9 +44,8 @@ LRESULT CALLBACK TextService::keyWatchProc(int code, WPARAM wParam, LPARAM lPara
 }
 
 void TextService::keyWatchDown(WPARAM vk) {
-    const bool eligible = vk >= 'A' && vk <= 'Z' && isChineseMode()
-        && ::GetKeyState(VK_CONTROL) >= 0 && ::GetKeyState(VK_MENU) >= 0 && ::GetKeyState(VK_SHIFT) >= 0;
-    keyWatch_.hookDown((uint32_t)vk, eligible, ::GetTickCount64());
+    const bool eligible = isChineseMode() && ::GetKeyState(VK_CONTROL) >= 0 && ::GetKeyState(VK_MENU) >= 0;
+    keyWatch_.hookDown((uint32_t)vk, eligible, ::GetTickCount64(), ::GetKeyState(VK_SHIFT) < 0);
 }
 
 void TextService::keyWatchUp(WPARAM vk) {
@@ -77,7 +76,7 @@ void TextService::focusInputState(bool& hasDoc, bool& hasImc) const {
     }
 }
 
-// 取出 WM_CHAR:对应字母键按下未经输入法时,把该键排入首键暂存补发。返回 true 表示调用方应拦下该消息。
+// 取出 WM_CHAR:对应字母/标点键按下未经输入法时,把该键排入首键暂存补发。返回 true 表示调用方应拦下该消息。
 // 只在焦点文档与输入法上下文都在时拦(实机证据的形态;密码框等本就不进输入法的窗口不拦);
 // 焦点不在本线程不拦(补发会进别处);在途时又有键未经输入法(多半是补发的键)即停用暂存,免得循环、打乱顺序。
 // 延后补发期间焦点移走(失去焦点、补发时校验失败)或 SendInput 失败,按首键暂存原有语义丢弃并记日志
@@ -104,12 +103,16 @@ bool TextService::keyWatchChar(WPARAM ch, LPARAM lParam) {
     if (!vk)
         return false;
     // 扫描码与扩展键标志取自 WM_CHAR 的 lParam(与按下时相同),重复计数置 1
-    const PIME::StashKey k{vk, ((uint32_t)lParam & 0x01FF0000u) | 1u, false};
+    const bool shift = PIME::keyForChar((uint32_t)ch).shift;
+    const PIME::StashKey k{vk, ((uint32_t)lParam & 0x01FF0000u) | 1u, shift};
     // 不立即补发(刚取得焦点时紧随的注入键同样未经输入法):200 ms 后或下一个键到输入法时补发
     if (!stash_.addMissed(k, now).eat)
         return false;
+    // Shift+标点:物理 Shift 抬起放行给程序、不经服务端,免得按下没到输入法、只到了抬起被当成单击 Shift 切英文
+    if (shift && ::GetKeyState(VK_SHIFT) < 0)
+        stashSkipShiftUp_ = true;
     syncStash();
-    onDiagnostic("字母键未经输入法:已拦下字符,延后补发");
+    onDiagnostic(vk >= 'A' && vk <= 'Z' ? "字母键未经输入法:已拦下字符,延后补发" : "标点键未经输入法:已拦下字符,延后补发");
     return true;
 }
 

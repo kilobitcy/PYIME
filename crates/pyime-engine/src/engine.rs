@@ -435,9 +435,14 @@ impl Engine {
             }
             self.grow(input, a, a, "", Acc { prev: a, ..Acc::default() }, 0, &mut Vec::new(), None, &mut words);
         }
-        for (typed, text, bonus) in self.user.matching(input) {
-            if !words.iter().any(|w| w.start == 0 && w.end == typed.len() && w.text == text) {
-                words.push(Word { start: 0, end: typed.len(), text: text.to_string(), score: USER_PHRASE_BASE + bonus, fuzzy: 0, pairs: 0, cuts: Vec::new(), partial: false, learned: false, last: typed.len(), bonus });
+        // 用户短语(含词库外的,如单独学过的 落盘)从每个可达位置起都可匹配,供整句拼用;
+        // 句中只取多字短语:单字学习多是简拼/模糊(s→上、n→了),按精确词插进句中会拼出噪声
+        for a in (0..input.len()).filter(|&a| reach[a]) {
+            for (typed, text, bonus) in self.user.matching(&input[a..]).into_iter().filter(|p| a == 0 || p.1.chars().count() > 1) {
+                let end = a + typed.len();
+                if !words.iter().any(|w| w.start == a && w.end == end && w.text == text) {
+                    words.push(Word { start: a, end, text: text.to_string(), score: USER_PHRASE_BASE + bonus, fuzzy: 0, pairs: 0, cuts: Vec::new(), partial: false, learned: false, last: end, bonus });
+                }
             }
         }
         if !context.is_empty() {
@@ -853,6 +858,19 @@ mod tests {
         assert!(t.contains(&"再追加".to_string()));
         e.learn("zaizhuijia", "再追加");
         assert_eq!(texts(&e, "zaizhuijia")[0], "再追加");
+    }
+
+    #[test]
+    fn 词库外的用户短语在句中也能用() {
+        // "落盘" 不在词库,只单独打 luopan 学过;xianluopan 应能拼出 先落盘
+        let mut e = engine(&[
+            ("xian", "先", 50_000), ("luo", "罗", 30_000), ("pan", "盘", 30_000), ("luo pan", "罗盘", 20_000),
+        ]);
+        assert!(!texts(&e, "xianluopan").contains(&"先落盘".to_string()));
+        for _ in 0..3 {
+            e.learn("luopan", "落盘");
+        }
+        assert!(texts(&e, "xianluopan").contains(&"先落盘".to_string()));
     }
 
     #[test]

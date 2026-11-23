@@ -81,6 +81,32 @@ int main() {
         CHECK(w3.hookChar('H', 101) == 0 && w3.hookChar('1', 101) == 0);
         CHECK(w3.hookChar('u', 101) == 0);
     }
+    {   // 标点:逗号(无 Shift)与左括号(Shift+9)未经输入法时返回其 vk;Shift 与字符不符返回 0
+        MissedKeyWatch w;
+        w.hookDown(0xBC, true, 100);
+        CHECK(w.hookChar(',', 101) == 0xBC);
+        CHECK(w.replayedHeld(','));
+        w.hookDown('9', true, 200, true);
+        CHECK(w.hookChar('(', 201) == '9');
+        MissedKeyWatch w2;
+        w2.hookDown(0xBC, true, 100, true);
+        CHECK(w2.hookChar(',', 101) == 0);
+        w2.hookDown('9', true, 100);
+        CHECK(w2.hookChar('(', 101) == 0);
+        CHECK(w2.hookChar('/', 101) == 0 && w2.hookChar('-', 101) == 0);
+    }
+    {   // 抬起诊断只报不带 Shift 的字母,标点与 Shift+字母不报
+        MissedKeyWatch w;
+        w.hookDown(0xBC, true, 100);
+        CHECK(!w.hookUp(0xBC, 150));
+        w.hookDown('D', true, 2000, true);
+        CHECK(!w.hookUp('D', 2050));
+    }
+    {   // keyForChar:字母、无 Shift 与带 Shift 的标点;其他字符为 0
+        CHECK(PIME::keyForChar('a').vk == 'A' && !PIME::keyForChar('a').shift);
+        CHECK(PIME::keyForChar('?').vk == 0xBF && PIME::keyForChar('?').shift);
+        CHECK(PIME::keyForChar('A').vk == 0 && PIME::keyForChar('1').vk == 0 && PIME::keyForChar(' ').vk == 0);
+    }
     if (failures == 0) std::printf("missed_key_watch_test: 全部通过\n");
     return failures == 0 ? 0 : 1;
 }
